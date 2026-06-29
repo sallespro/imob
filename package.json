@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "start": "concurrently --kill-others-on-fail -n busybase,vite -c cyan,green \"bunx busybase serve --dir busybase_data\" \"npm run dev --prefix imob-app\"",
     "test": "playwright test",
     "scrape": "node scripts/scraper.js"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0"
+    "@playwright/test": "^1.52.0",
+    "concurrently": "^10.0.3"
   }
 }
