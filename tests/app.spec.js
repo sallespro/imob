@@ -271,7 +271,7 @@ test.describe('Property display', () => {
   test('property card shows price, location, and link', async ({ page }) => {
     await page.goto(APP_URL);
     await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    await page.locator('.property-card:not(.skeleton)').waitFor({ timeout: 10000 });
+    await page.locator('.property-card:not(.skeleton)').first().waitFor({ timeout: 10000 });
     const card = page.locator('.property-card:not(.skeleton)').first();
     // Should have a price element
     const priceEl = card.locator('.price-main, .price-sale');
@@ -286,7 +286,7 @@ test.describe('Property display', () => {
   test('tag chips render for tagged properties', async ({ page }) => {
     await page.goto(APP_URL);
     await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    await page.locator('.property-card:not(.skeleton)').waitFor({ timeout: 10000 });
+    await page.locator('.property-card:not(.skeleton)').first().waitFor({ timeout: 10000 });
     // At least one card with a tag should exist (we seeded tagged ones)
     const taggedCards = page.locator('.property-tag');
     const count = await taggedCards.count();
@@ -297,20 +297,17 @@ test.describe('Property display', () => {
     await page.goto(APP_URL);
     await page.locator('.db-ok').waitFor({ timeout: 10000 });
 
+    // Wait for cards to load first
+    await page.locator('.property-card:not(.skeleton)').first().waitFor({ timeout: 10000 });
     // Set an impossible filter: 10+ million min price
     const precoSection = page.locator('.filter-section', { hasText: 'Preço' });
     const minInput = precoSection.locator('input').first();
-    await minInput.fill('99999999');
-    // Wait for reload
-    await page.waitForTimeout(600);
-    await page.waitForFunction(() =>
-      document.querySelector('.grid-empty') !== null ||
-      document.querySelector('.property-card:not(.skeleton)') !== null,
-      { timeout: 8000 }
-    );
-    // Should show empty state
+    await minInput.click();
+    await minInput.fill('');
+    await minInput.pressSequentially('99999999');
+    // Wait for empty state
     const emptyState = page.locator('.grid-empty');
-    await expect(emptyState).toBeVisible({ timeout: 5000 });
+    await expect(emptyState).toBeVisible({ timeout: 8000 });
   });
 });
 

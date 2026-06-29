@@ -4,7 +4,7 @@ import PropertyGrid from './components/PropertyGrid';
 import StatsBar from './components/StatsBar';
 import ExtractModal from './components/ExtractModal';
 import { DEFAULT_FILTERS } from './lib/constants';
-import { db, initAuth, getProperties } from './lib/db';
+import { initAuth, getProperties, upsertProperties, insertScraperRun } from './lib/db';
 import { parseHtmlListings, getTotalPagesFromHtml, buildSearchUrl } from './lib/scraper';
 import './App.css';
 
@@ -70,18 +70,8 @@ export default function App() {
         console.log(`[Scraper] Page ${page}/${totalPages}: total=${allListings.length}`);
       }
 
-      // Save to BusyBase in batches of 50
-      for (let i = 0; i < allListings.length; i += 50) {
-        const { error } = await db.from('properties')
-          .upsert(allListings.slice(i, i + 50), { onConflict: 'code' });
-        if (error) throw error;
-      }
-
-      await db.from('scraper_runs').insert({
-        filters: JSON.stringify(filters),
-        total_found: allListings.length,
-        ran_at: new Date().toISOString(),
-      });
+      await upsertProperties(allListings);
+      await insertScraperRun({ filters: JSON.stringify(filters), total_found: allListings.length });
 
       setExtractStatus('done');
       await loadProperties();

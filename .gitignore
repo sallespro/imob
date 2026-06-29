@@ -6,3 +6,4 @@ imob-app/node_modules/
 imob-app/dist/
 imob-app/.env
 *.log
+.gm/pw-sock-*/
