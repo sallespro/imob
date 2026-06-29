@@ -23,8 +23,8 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
               <div className="modal-info">
                 <AlertCircle size={14} />
                 <span>
-                  A extração usa um proxy Vite. Certifique-se de que o servidor de desenvolvimento está rodando
-                  e o BusyBase está ativo em <code>http://localhost:54321</code>.
+                  A extração usa Playwright (navegador headless) via scrape-server local em
+                  <code>localhost:5174</code>. Certifique-se de que o BusyBase está ativo em <code>localhost:54321</code>.
                 </span>
               </div>
 
@@ -62,9 +62,9 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
           {status === 'error' && (
             <div className="modal-progress">
               <AlertCircle size={32} color="#ef4444" />
-              <p>Erro durante a extração. Verifique se o BusyBase está rodando e tente novamente.</p>
+              <p>Erro durante a extração. Verifique se o BusyBase e o scrape-server estão rodando.</p>
               <p className="modal-progress-hint">
-                Inicie o BusyBase com: <code>bunx busybase serve</code>
+                Use <code>npm run start</code> para iniciar todos os servidores.
               </p>
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={onClose}>Fechar</button>

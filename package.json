@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "concurrently --kill-others-on-fail -n busybase,vite -c cyan,green \"bunx busybase serve --dir busybase_data\" \"npm run dev --prefix imob-app\"",
+    "start": "concurrently --kill-others-on-fail -n busybase,vite,scraper -c cyan,green,yellow \"bunx busybase serve --dir busybase_data\" \"npm run dev --prefix imob-app\" \"node scrape-server.mjs\"",
     "test": "playwright test",
     "scrape": "node scripts/scraper.js"
   },

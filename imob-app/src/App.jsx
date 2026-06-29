@@ -4,8 +4,8 @@ import PropertyGrid from './components/PropertyGrid';
 import StatsBar from './components/StatsBar';
 import ExtractModal from './components/ExtractModal';
 import { DEFAULT_FILTERS } from './lib/constants';
-import { initAuth, getProperties, upsertProperties, insertScraperRun } from './lib/db';
-import { parseHtmlListings, getTotalPagesFromHtml, buildSearchUrl } from './lib/scraper';
+import { initAuth, getProperties } from './lib/db';
+import { buildExternalUrl } from './lib/scraper';
 import './App.css';
 
 export default function App() {
@@ -47,31 +47,53 @@ export default function App() {
   async function runExtraction() {
     setExtractStatus('running');
     try {
-      const proxyPath = buildSearchUrl(filters, 1);
-      const resp1 = await fetch(`/api-proxy${proxyPath}`);
-      if (!resp1.ok) throw new Error(`HTTP ${resp1.status}`);
-      const html1 = await resp1.text();
+      // Trigger the Playwright scraper via local scrape-server (port 5174)
+      const resp = await fetch('http://localhost:5174/scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transacao: filters.transacao,
+          categoria: filters.categoria,
+          cidade: filters.cidade || 'sc+florianopolis',
+          bairro: filters.bairro || [],
+          quartos: filters.quartos || null,
+          tipoImovel: filters.tipoImovel || [],
+          precoMin: filters.precoMin || null,
+          precoMax: filters.precoMax || null,
+          vagas: filters.vagas ?? null,
+          banheiros: filters.banheiros || null,
+          areaMin: filters.areaMin || null,
+          areaMax: filters.areaMax || null,
+          maxPages: filters.maxPages ? parseInt(filters.maxPages) : null,
+        }),
+      });
 
-      const totalPages = filters.maxPages
-        ? Math.min(parseInt(filters.maxPages), getTotalPagesFromHtml(html1))
-        : getTotalPagesFromHtml(html1);
-
-      console.log(`[Scraper] ${totalPages} pages`);
-      let allListings = parseHtmlListings(html1);
-      console.log(`[Scraper] Page 1: ${allListings.length}`);
-
-      for (let page = 2; page <= totalPages; page++) {
-        await new Promise(r => setTimeout(r, 700));
-        const resp = await fetch(`/api-proxy${buildSearchUrl(filters, page)}`);
-        if (!resp.ok) continue;
-        const listings = parseHtmlListings(await resp.text());
-        const newOnes = listings.filter(l => !allListings.some(e => e.code === l.code));
-        allListings = [...allListings, ...newOnes];
-        console.log(`[Scraper] Page ${page}/${totalPages}: total=${allListings.length}`);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
       }
 
-      await upsertProperties(allListings);
-      await insertScraperRun({ filters: JSON.stringify(filters), total_found: allListings.length });
+      console.log('[Scraper] Scrape job started — check terminal for progress');
+
+      // Poll status until done
+      await new Promise((resolve, reject) => {
+        const interval = setInterval(async () => {
+          try {
+            const statusResp = await fetch('http://localhost:5174/scrape/status');
+            const status = await statusResp.json();
+            if (status.log?.length) {
+              console.log('[Scraper]', status.log[status.log.length - 1]);
+            }
+            if (!status.running) {
+              clearInterval(interval);
+              resolve();
+            }
+          } catch (e) {
+            clearInterval(interval);
+            reject(e);
+          }
+        }, 3000);
+      });
 
       setExtractStatus('done');
       await loadProperties();

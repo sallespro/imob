@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 /**
- * scraper.js — Auxiliadora Predial property scraper
+ * scraper.js — Auxiliadora Predial property scraper (Playwright-based)
+ *
+ * The site is a Next.js RSC app — listings are rendered server-side and not
+ * available via static HTML or GraphQL from a headless client. We use
+ * Playwright to drive a real browser and extract data from the rendered DOM.
  *
  * Usage:
  *   node scripts/scraper.js [options]
@@ -8,21 +12,16 @@
  * Options:
  *   --transacao      alugar|comprar (default: comprar)
  *   --categoria      residencial|comercial (default: residencial)
- *   --cidade         e.g. "sc+florianopolis" (default: sc+florianopolis)
+ *   --cidade         city slug (default: sc+florianopolis)
  *   --bairro         bairro name, repeatable
- *   --quartos        1|2|3|4
- *   --tipoImovel     Casa|Apartamento|Lote/Terreno|... (repeatable)
+ *   --quartos        min bedrooms (1|2|3|4)
+ *   --tipoImovel     property type, repeatable
  *   --precoMin       number
  *   --precoMax       number
  *   --vagas          0|1|2|3|4
  *   --banheiros      1|2|3|4
  *   --areaMin        number
  *   --areaMax        number
- *   --mobiliado      Sim|Semi|Nao
- *   --lancamentos    Sim|Nao
- *   --exclusivo      boolean
- *   --comodidades    comma-separated list
- *   --anuncio        BaixouPreco|AvaliaImovel
  *   --maxPages       number (default: all)
  *   --save           save to busybase (default: true)
  *   --busybaseUrl    busybase server URL (default: http://localhost:54321)
@@ -30,16 +29,15 @@
  *   --help           show this help
  *
  * Example:
- *   node scripts/scraper.js --bairro=Campeche --bairro="Porto da Lagoa" --quartos=3 --tipoImovel=Casa
+ *   node scripts/scraper.js --bairro=Campeche --quartos=3 --maxPages=5
  */
 
-import axios from 'axios';
-import * as cheerio from 'cheerio';
+import { chromium } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
 
 const SITE_BASE = 'https://www.auxiliadorapredial.com.br';
+const PAGE_SIZE = 21; // listings per page on the site
 
-// Parse CLI args
 function parseArgs(argv) {
   const args = {
     transacao: 'comprar',
@@ -54,11 +52,6 @@ function parseArgs(argv) {
     banheiros: null,
     areaMin: null,
     areaMax: null,
-    mobiliado: null,
-    lancamentos: null,
-    exclusivo: null,
-    comodidades: [],
-    anuncio: [],
     maxPages: null,
     save: true,
     busybaseUrl: process.env.BUSYBASE_URL || 'http://localhost:54321',
@@ -66,10 +59,7 @@ function parseArgs(argv) {
   };
 
   for (const arg of argv.slice(2)) {
-    if (arg === '--help') {
-      console.log(helpText());
-      process.exit(0);
-    }
+    if (arg === '--help') { console.log(helpText()); process.exit(0); }
     const [key, ...rest] = arg.replace(/^--/, '').split('=');
     const val = rest.join('=');
     switch (key) {
@@ -85,11 +75,6 @@ function parseArgs(argv) {
       case 'banheiros': args.banheiros = val; break;
       case 'areaMin': args.areaMin = val; break;
       case 'areaMax': args.areaMax = val; break;
-      case 'mobiliado': args.mobiliado = val; break;
-      case 'lancamentos': args.lancamentos = val; break;
-      case 'exclusivo': args.exclusivo = val !== 'false'; break;
-      case 'comodidades': args.comodidades = val.split(',').map(c => c.trim()); break;
-      case 'anuncio': args.anuncio.push(val); break;
       case 'maxPages': args.maxPages = parseInt(val); break;
       case 'save': args.save = val !== 'false'; break;
       case 'busybaseUrl': args.busybaseUrl = val; break;
@@ -99,10 +84,10 @@ function parseArgs(argv) {
   return args;
 }
 
-function buildUrl(args, page) {
+function buildUrl(args, page = 1) {
   const path = `/${args.transacao}/${args.categoria}/${args.cidade}`;
   const params = new URLSearchParams();
-  params.set('page', String(page));
+  if (page > 1) params.set('pagina', String(page));
   if (args.quartos) params.set('quartos', args.quartos);
   for (const t of args.tipoImovel) params.append('tipoImovel', t);
   for (const b of args.bairro) params.append('bairro', b);
@@ -112,299 +97,314 @@ function buildUrl(args, page) {
   if (args.banheiros) params.set('banheiros', args.banheiros);
   if (args.areaMin) params.set('areaMin', args.areaMin);
   if (args.areaMax) params.set('areaMax', args.areaMax);
-  if (args.mobiliado) params.set('mobiliado', args.mobiliado);
-  if (args.lancamentos) params.set('lancamentos', args.lancamentos);
-  if (args.exclusivo) params.set('exclusivo', 'true');
-  for (const c of args.comodidades) params.append('comodidades', c);
-  for (const a of args.anuncio) params.append('anuncio', a);
-  return `${SITE_BASE}${path}?${params.toString()}`;
+  const qs = params.toString();
+  return `${SITE_BASE}${path}${qs ? '?' + qs : ''}`;
 }
 
-function parsePrice(text) {
-  if (!text) return null;
-  const clean = text.replace(/[^\d,]/g, '').replace(',', '.');
-  const num = parseFloat(clean);
-  return isNaN(num) ? null : num;
+function parsePrice(str) {
+  if (!str) return null;
+  // "R$ 1.040.000" or "1.040.000"
+  const clean = str.replace(/[^\d]/g, '');
+  const n = parseFloat(clean);
+  return isNaN(n) ? null : n;
 }
 
-function parseArea(text) {
-  if (!text) return null;
-  const match = text.match(/(\d+)/);
-  return match ? parseInt(match[1]) : null;
-}
+/**
+ * Extract all listing cards from the currently rendered page.
+ * Cards are identified by [data-imovel-codigo] attribute.
+ * Text format per card:
+ *   <tipo> para comprar
+ *   R$ <price>  (or: de R$ <original>\npor R$ <sale>)
+ *   ⓘ
+ *   Custos adicionais
+ *   <street>
+ *   <bairro>, Florianópolis - SC
+ *   <area>m²
+ *   <quartos>  (number only)
+ *   <banheiros>
+ *   <vagas>
+ *   <tag> <tag> ...
+ */
+async function extractListingsFromPage(page) {
+  return page.evaluate((siteBase) => {
+    const cards = document.querySelectorAll('[data-imovel-codigo]');
+    const results = [];
+    const seen = new Set();
 
-function scrapeListings($) {
-  const listings = [];
+    for (const card of cards) {
+      const codigo = card.getAttribute('data-imovel-codigo');
+      if (!codigo || seen.has(codigo)) continue;
+      seen.add(codigo);
 
-  // Each listing card
-  $('a[href*="/imovel/"]').each((_, el) => {
-    const $el = $(el);
-    const href = $el.attr('href');
-    if (!href || listings.some(l => l.url === href)) return;
+      const link = card.querySelector('a[href*="/imovel/"]');
+      const href = link?.getAttribute('href') || '';
+      const url = href.startsWith('http') ? href : siteBase + href;
 
-    const text = $el.text();
+      // Type from URL slug
+      const tipoSlug = href.match(/\/imovel\/[^\/]+\/\d+\/([^+%?]+)/)?.[1] || '';
+      const tipo = tipoSlug
+        .replace(/-/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
 
-    // Extract code from URL e.g. /imovel/venda/762862/
-    const codeMatch = href.match(/\/imovel\/\w+\/(\d+)\//);
-    const code = codeMatch ? codeMatch[1] : null;
+      // Image
+      const img = card.querySelector('img[src*="img.auxiliadorapredial"]') ||
+                  card.querySelector('img[srcset*="img.auxiliadorapredial"]');
+      const imgSrc = img?.src || img?.srcset?.match(/https[^\s,]+/)?.[0] || null;
+      // Prefer original thumb URL, not Next.js proxy
+      const thumbMatch = (img?.srcset || img?.src || '').match(/url=([^&\s]+)/);
+      const imageUrl = thumbMatch ? decodeURIComponent(thumbMatch[1]) : imgSrc;
 
-    // Try to parse structured data from link text
-    const titleMatch = text.match(/^([^\n]+)/);
-    const title = titleMatch ? titleMatch[1].trim() : '';
+      // Text from card (skip the image swiper section — use innerText)
+      const text = card.innerText || '';
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
 
-    // Price — look for R$ pattern
-    const priceMatch = text.match(/R\$\s*([\d.,]+)/g);
-    const originalPrice = priceMatch ? parsePrice(priceMatch[0]) : null;
-    const salePrice = priceMatch && priceMatch.length > 1 ? parsePrice(priceMatch[priceMatch.length - 1]) : originalPrice;
+      // Prices: look for R$ patterns in text
+      const priceMatches = text.match(/R\$\s*[\d.,]+/g) || [];
+      const prices = priceMatches.map(p => {
+        const clean = p.replace(/[^\d]/g, '');
+        const n = parseFloat(clean);
+        return isNaN(n) ? null : n;
+      }).filter(Boolean);
 
-    // Location
-    const locMatch = text.match(/Localização\s+([^\n]+)/);
-    const location = locMatch ? locMatch[1].trim() : '';
-    const [bairro, cityState] = location.split(',').map(s => s.trim());
+      const precoVenda = prices.length > 0 ? prices[prices.length - 1] : null;
+      const precoOriginal = prices.length > 1 ? prices[0] : null;
 
-    // Metrics
-    const areaMatch = text.match(/Metragem\s+([\d]+m²)/);
-    const area = areaMatch ? parseArea(areaMatch[1]) : null;
-    const quartosMatch = text.match(/Quartos\s+(\d+)/);
-    const quartos = quartosMatch ? parseInt(quartosMatch[1]) : null;
-    const banheiroMatch = text.match(/Banheiros\s+(\d+)/);
-    const banheiros = banheiroMatch ? parseInt(banheiroMatch[1]) : null;
-    const vagasMatch = text.match(/Garagens\s+(\d+)/);
-    const vagas = vagasMatch ? parseInt(vagasMatch[1]) : null;
+      // Area
+      const areaMatch = text.match(/(\d+)\s*m[²2]/);
+      const areaN = areaMatch ? parseInt(areaMatch[1]) : null;
 
-    // Features
-    const knownFeatures = [
-      'Área de serviço', 'Churrasqueira', 'Piscina', 'Água Quente',
-      'Ar-condicionado', 'Sacada', 'Lavabo', 'Cozinha Montada', 'Living',
-      'Lareira', 'Terraço', 'Alarme no Imóvel', 'Piscina Privativa',
-      'Calefação', 'Sauna', 'Rua Silenciosa', 'Último andar', 'Térreo', 'Elevador',
-      'Closet', 'Gás Central', 'Anúncio Novo', 'Baixou o preço',
-      'Avalia imóvel no negócio', 'Mobiliado',
-    ];
-    const features = knownFeatures.filter(f => text.toLowerCase().includes(f.toLowerCase()));
+      // Bairro: line containing ", Florianópolis" or "Florianopolis"
+      let bairro = null;
+      let cidade = 'Florianópolis';
+      for (const line of lines) {
+        const m = line.match(/^(.+?),\s*(Florian[oó]polis|Ilha)/i);
+        if (m) {
+          // The bairro is in the line before the address, but text bunches them together
+          // The format is: "<street>\n<bairro>, Florianópolis - SC"
+          // Since innerText merges them, just take everything before the comma
+          bairro = m[1].trim();
+          break;
+        }
+      }
 
-    // Tags
-    const tags = [];
-    if (text.includes('Anúncio Novo')) tags.push('novo');
-    if (text.includes('Baixou o preço')) tags.push('preco-baixou');
-    if (text.includes('Avalia imóvel no negócio')) tags.push('avalia-imovel');
-    if (text.includes('EXCLUSIVO')) tags.push('exclusivo');
-    if (text.includes('Mobiliado')) tags.push('mobiliado');
+      // Rooms: after area line, there are 3 numbers (quartos, banheiros, vagas)
+      // They appear as individual digit lines after the m² line
+      const numbers = [];
+      let pastArea = false;
+      for (const line of lines) {
+        if (line.match(/\d+\s*m[²2]/)) { pastArea = true; continue; }
+        if (pastArea && /^\d+$/.test(line)) {
+          numbers.push(parseInt(line));
+          if (numbers.length === 3) break;
+        }
+        if (pastArea && numbers.length > 0 && !/^\d+$/.test(line)) break;
+      }
+      const [quartos, banheiros, vagas] = numbers;
 
-    // Type detection from title
-    let tipo = 'Imóvel';
-    const tipos = ['Apartamento', 'Casa em Condomínio', 'Casa', 'Cobertura', 'Loft', 'Sobrado', 'Flat', 'Terreno', 'Chácara'];
-    for (const t of tipos) {
-      if (title.toLowerCase().includes(t.toLowerCase())) { tipo = t; break; }
+      // Tags
+      const tags = [];
+      if (text.includes('EXCLUSIVO') || text.includes('Exclusivo')) tags.push('exclusivo');
+      if (text.includes('Baixou o preço') || text.includes('Baixou preço')) tags.push('preco-baixou');
+      if (text.includes('Anúncio Novo')) tags.push('novo');
+      if (text.includes('Avalia imóvel no negócio')) tags.push('avalia-imovel');
+      if (text.includes('Semi-Mobiliado')) tags.push('semi-mobiliado');
+      else if (text.includes('Mobiliado')) tags.push('mobiliado');
+
+      // Features
+      const knownFeatures = [
+        'Área de serviço', 'Churrasqueira', 'Piscina', 'Água Quente',
+        'Ar-condicionado', 'Sacada', 'Lavabo', 'Cozinha Montada', 'Living',
+        'Lareira', 'Terraço', 'Alarme no Imóvel', 'Piscina Privativa',
+        'Calefação', 'Sauna', 'Rua Silenciosa', 'Último andar', 'Térreo',
+        'Elevador', 'Closet', 'Gás Central',
+      ];
+      const features = knownFeatures.filter(f => text.includes(f));
+
+      // Title from first lines
+      const titleLine = lines.find(l => l.includes('para comprar') || l.includes('para alugar')) || tipo;
+
+      results.push({
+        code: codigo,
+        url,
+        title: titleLine,
+        tipo,
+        bairro: bairro || '',
+        cidade,
+        preco_venda: precoVenda,
+        preco_original: precoOriginal,
+        area_m2: areaN || null,
+        quartos: quartos || null,
+        banheiros: banheiros || null,
+        vagas: vagas !== undefined ? vagas : null,
+        features: JSON.stringify(features),
+        tags: JSON.stringify(tags),
+        image_url: imageUrl,
+        scraped_at: new Date().toISOString(),
+      });
     }
 
-    if (!code) return;
-
-    listings.push({
-      code,
-      url: href.startsWith('http') ? href : `${SITE_BASE}${href}`,
-      title,
-      tipo,
-      bairro: bairro || '',
-      cidade: cityState || '',
-      preco_original: originalPrice,
-      preco_venda: salePrice,
-      area_m2: area,
-      quartos,
-      banheiros,
-      vagas,
-      features: JSON.stringify(features),
-      tags: JSON.stringify(tags),
-      scraped_at: new Date().toISOString(),
-    });
-  });
-
-  return listings;
+    return results;
+  }, SITE_BASE);
 }
 
-function getTotalPages($) {
-  // Look for pagination — try to find last page number
-  const pageLinks = [];
-  $('a[href*="page="]').each((_, el) => {
-    const match = $(el).attr('href').match(/page=(\d+)/);
-    if (match) pageLinks.push(parseInt(match[1]));
+async function getTotalFromPage(page) {
+  return page.evaluate(() => {
+    const text = document.body.innerText;
+    const m = text.match(/(\d+\.?\d*)\s*im[oó]veis?/i);
+    if (!m) return null;
+    return parseInt(m[1].replace(/\./g, ''));
   });
-  // Also check button text
-  $('button').each((_, el) => {
-    const n = parseInt($(el).text().trim());
-    if (!isNaN(n) && n > 0) pageLinks.push(n);
-  });
-  return pageLinks.length ? Math.max(...pageLinks) : 1;
 }
 
-async function fetchPage(url) {
-  const res = await axios.get(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-      'Accept-Language': 'pt-BR,pt;q=0.9',
-    },
-    timeout: 15000,
-  });
-  return cheerio.load(res.data);
-}
-
-async function saveToDb(db, listings) {
+async function saveToDb(bbUrl, bbKey, listings) {
   if (!listings.length) return;
-
-  // Upsert by code to avoid duplicates
-  const { error } = await db.from('properties')
-    .upsert(listings, { onConflict: 'code' });
-
-  if (error) {
-    console.error('DB error:', error.message);
-    throw error;
+  const headers = {
+    'Content-Type': 'application/json',
+    'apikey': bbKey,
+    'Authorization': `Bearer ${bbKey}`,
+    'Prefer': 'resolution=merge-duplicates,return=minimal',
+  };
+  const batchSize = 50;
+  for (let i = 0; i < listings.length; i += batchSize) {
+    const batch = listings.slice(i, i + batchSize);
+    const res = await fetch(`${bbUrl}/rest/v1/properties`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(batch),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
   }
 }
 
-async function saveScraperRun(db, args, totalFound) {
-  await db.from('scraper_runs').insert({
-    filters: JSON.stringify(args),
-    total_found: totalFound,
-    ran_at: new Date().toISOString(),
+async function saveScraperRun(bbUrl, bbKey, filters, totalFound) {
+  const headers = {
+    'Content-Type': 'application/json',
+    'apikey': bbKey,
+    'Authorization': `Bearer ${bbKey}`,
+    'Prefer': 'return=minimal',
+  };
+  await fetch(`${bbUrl}/rest/v1/scraper_runs`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ filters, total_found: totalFound, ran_at: new Date().toISOString() }),
   });
 }
 
 function helpText() {
   return `
-Auxiliadora Predial Scraper
+Auxiliadora Predial Scraper (Playwright)
 Usage: node scripts/scraper.js [options]
 
 Options:
-  --transacao=<alugar|comprar>    Transaction type (default: comprar)
+  --transacao=<alugar|comprar>     Transaction type (default: comprar)
   --categoria=<residencial|comercial>  Category (default: residencial)
-  --cidade=<slug>                 City slug (default: sc+florianopolis)
-  --bairro=<name>                 Neighborhood, can repeat
-  --quartos=<1-4>                 Minimum bedrooms
-  --tipoImovel=<type>             Property type, can repeat
-                                  Types: Casa, Apartamento, Lote/Terreno,
-                                  Casa em condomínio, Chácara/Sítio/Fazenda,
-                                  Apartamento garden, Cobertura, JK/Loft/Studio,
-                                  Sobrado, Flat, Loft, Cobertura horizontal
-  --precoMin=<number>             Minimum price (BRL)
-  --precoMax=<number>             Maximum price (BRL)
-  --vagas=<0-4>                   Minimum parking spots
-  --banheiros=<1-4>               Minimum bathrooms
-  --areaMin=<m2>                  Minimum area in m²
-  --areaMax=<m2>                  Maximum area in m²
-  --mobiliado=<Sim|Semi|Nao>      Furnished status
-  --lancamentos=<Sim|Nao>         New developments only
-  --exclusivo                     Exclusive listings only
-  --comodidades=<c1,c2,...>       Amenities filter (comma-separated)
-                                  Options: area-de-servico, churrasqueira,
-                                  piscina, agua-quente, ar-condicionado, sacada,
-                                  lavabo, cozinha-montada, living, lareira,
-                                  terraco, alarme-no-imovel, piscina-privativa,
-                                  calefacao, sauna, rua-silenciosa, ultimo-andar,
-                                  terreo, elevador
-  --anuncio=<type>                Ad filter, can repeat
-                                  Options: BaixouPreco, AvaliaImovel
-  --maxPages=<n>                  Limit pages to scrape
-  --save=<true|false>             Save to BusyBase (default: true)
-  --busybaseUrl=<url>             BusyBase URL (default: http://localhost:54321)
-  --busybaseKey=<key>             BusyBase key (default: local)
-  --help                          Show this help
-
-Environment variables:
-  BUSYBASE_URL     BusyBase server URL
-  BUSYBASE_KEY     BusyBase anon key
+  --cidade=<slug>                  City slug (default: sc+florianopolis)
+  --bairro=<name>                  Neighborhood, can repeat
+  --quartos=<1-4>                  Minimum bedrooms
+  --tipoImovel=<type>              Property type, can repeat
+  --precoMin=<number>              Minimum price (BRL)
+  --precoMax=<number>              Maximum price (BRL)
+  --vagas=<0-4>                    Minimum parking spots
+  --banheiros=<1-4>                Minimum bathrooms
+  --areaMin=<m2>                   Minimum area in m²
+  --areaMax=<m2>                   Maximum area in m²
+  --maxPages=<n>                   Limit pages to scrape
+  --save=<true|false>              Save to BusyBase (default: true)
+  --busybaseUrl=<url>              BusyBase URL (default: http://localhost:54321)
+  --busybaseKey=<key>              BusyBase key (default: local)
+  --help                           Show this help
 
 Example:
-  node scripts/scraper.js \\
-    --bairro=Campeche --bairro="Porto da Lagoa" \\
-    --quartos=3 --tipoImovel=Casa \\
-    --maxPages=5
+  node scripts/scraper.js --bairro=Campeche --quartos=3 --maxPages=5
 `;
 }
 
 async function main() {
   const args = parseArgs(process.argv);
 
-  let db = null;
-  if (args.save) {
-    db = createClient(args.busybaseUrl, args.busybaseKey);
-    // Sign in anonymously
-    try {
-      await db.auth.signInAnonymously();
-    } catch {
-      // BusyBase keypair auth
+  console.log('\n🏠 Auxiliadora Predial Scraper (Playwright)');
+  console.log('============================================');
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    locale: 'pt-BR',
+  });
+  const page = await context.newPage();
+
+  // Block images and fonts to speed up loading
+  await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot}', r => r.abort());
+
+  try {
+    const firstUrl = buildUrl(args, 1);
+    console.log(`\nLoading page 1: ${firstUrl}`);
+    await page.goto(firstUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.waitForTimeout(3000);
+
+    // Get total count
+    const totalImoveis = await getTotalFromPage(page);
+    const totalPages = totalImoveis ? Math.ceil(totalImoveis / PAGE_SIZE) : 1;
+    const pagesToScrape = args.maxPages ? Math.min(args.maxPages, totalPages) : totalPages;
+
+    console.log(`Found ~${totalImoveis} imóveis across ${totalPages} pages`);
+    console.log(`Scraping ${pagesToScrape} pages...\n`);
+
+    let allListings = [];
+    const seen = new Set();
+
+    // Extract page 1
+    const page1Listings = await extractListingsFromPage(page);
+    for (const l of page1Listings) {
+      if (!seen.has(l.code)) { seen.add(l.code); allListings.push(l); }
+    }
+    console.log(`Page 1: ${page1Listings.length} listings (total: ${allListings.length})`);
+
+    // Remaining pages
+    for (let p = 2; p <= pagesToScrape; p++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const url = buildUrl(args, p);
+      console.log(`Loading page ${p}/${pagesToScrape}: ${url}`);
       try {
-        await db.auth.keypair?.signIn();
-      } catch {
-        console.warn('Auth skipped — proceeding without auth');
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.waitForTimeout(2000);
+        const listings = await extractListingsFromPage(page);
+        let newCount = 0;
+        for (const l of listings) {
+          if (!seen.has(l.code)) { seen.add(l.code); allListings.push(l); newCount++; }
+        }
+        console.log(`Page ${p}: ${listings.length} listings (+${newCount} new, total: ${allListings.length})`);
+      } catch (err) {
+        console.error(`  Page ${p} error: ${err.message}`);
       }
     }
-  }
 
-  console.log('\n🏠 Auxiliadora Predial Scraper');
-  console.log('================================');
+    console.log(`\n✅ Total unique listings scraped: ${allListings.length}`);
 
-  // First page to determine total
-  const firstUrl = buildUrl(args, 1);
-  console.log(`\nFetching page 1: ${firstUrl}\n`);
-
-  let $ = await fetchPage(firstUrl);
-  const totalPages = args.maxPages ? Math.min(args.maxPages, getTotalPages($)) : getTotalPages($);
-  console.log(`Found ${totalPages} pages to scrape`);
-
-  let allListings = scrapeListings($);
-  console.log(`Page 1: ${allListings.length} listings`);
-
-  // Remaining pages
-  for (let page = 2; page <= totalPages; page++) {
-    const url = buildUrl(args, page);
-    console.log(`Fetching page ${page}/${totalPages}: ${url}`);
-    try {
-      await new Promise(r => setTimeout(r, 800)); // polite delay
-      $ = await fetchPage(url);
-      const listings = scrapeListings($);
-      allListings = allListings.filter(l => !listings.some(n => n.code === l.code));
-      allListings.push(...listings);
-      console.log(`Page ${page}: ${listings.length} listings (total: ${allListings.length})`);
-    } catch (err) {
-      console.error(`Page ${page} error:`, err.message);
+    if (args.save && allListings.length) {
+      console.log('\nSaving to BusyBase...');
+      await saveToDb(args.busybaseUrl, args.busybaseKey, allListings);
+      await saveScraperRun(args.busybaseUrl, args.busybaseKey, JSON.stringify(args), allListings.length);
+      console.log('✅ Saved to BusyBase');
     }
-  }
 
-  console.log(`\n✅ Total unique listings: ${allListings.length}`);
+    // Summary
+    const byType = {};
+    for (const l of allListings) byType[l.tipo] = (byType[l.tipo] || 0) + 1;
+    console.log('\n--- By type ---');
+    for (const [t, n] of Object.entries(byType)) console.log(`  ${t}: ${n}`);
 
-  if (args.save && db && allListings.length) {
-    console.log('\nSaving to BusyBase...');
-    // Save in batches of 50
-    const batchSize = 50;
-    for (let i = 0; i < allListings.length; i += batchSize) {
-      const batch = allListings.slice(i, i + batchSize);
-      await saveToDb(db, batch);
-      console.log(`  Saved batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(allListings.length / batchSize)}`);
+    const prices = allListings.map(l => l.preco_venda).filter(Boolean);
+    if (prices.length) {
+      const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+      console.log(`\nPrice range: R$ ${Math.min(...prices).toLocaleString('pt-BR')} – R$ ${Math.max(...prices).toLocaleString('pt-BR')}`);
+      console.log(`Average: R$ ${avg.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`);
     }
-    await saveScraperRun(db, args, allListings.length);
-    console.log('✅ Saved to BusyBase');
-  }
 
-  // Print summary
-  console.log('\n--- Summary ---');
-  const byType = {};
-  for (const l of allListings) {
-    byType[l.tipo] = (byType[l.tipo] || 0) + 1;
+    return allListings;
+  } finally {
+    await browser.close();
   }
-  for (const [tipo, count] of Object.entries(byType)) {
-    console.log(`  ${tipo}: ${count}`);
-  }
-
-  const prices = allListings.map(l => l.preco_venda).filter(Boolean);
-  if (prices.length) {
-    const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-    const min = Math.min(...prices);
-    const max = Math.max(...prices);
-    console.log(`\nPrice range: R$ ${min.toLocaleString('pt-BR')} – R$ ${max.toLocaleString('pt-BR')}`);
-    console.log(`Average: R$ ${avg.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`);
-  }
-
-  return allListings;
 }
 
 main().catch(err => {

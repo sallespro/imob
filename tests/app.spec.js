@@ -50,7 +50,7 @@ async function seedProperty(props = {}) {
 }
 
 async function cleanTestData() {
-  const res = await fetch(`${BB_BASE}/properties`, { headers: { apikey: 'anon' } });
+  const res = await fetch(`${BB_BASE}/properties?limit=10000`, { headers: { apikey: 'anon' } });
   const json = await res.json();
   const testRows = (json.data || []).filter(r => r.code?.startsWith('TEST-'));
   for (const row of testRows) {
