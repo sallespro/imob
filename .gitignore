@@ -1,0 +1,8 @@
+node_modules/
+busybase_data/
+test-results/
+.playwright-mcp/
+imob-app/node_modules/
+imob-app/dist/
+imob-app/.env
+*.log
