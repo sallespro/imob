@@ -230,9 +230,9 @@ async function extractListingsFromPage(page) {
         tipo,
         bairro: bairro || '',
         cidade,
-        preco_venda: precoVenda,
-        preco_original: precoOriginal,
-        area_m2: areaN || null,
+        preco_venda: precoVenda || 0,
+        preco_original: precoOriginal || 0,
+        area_m2: areaN || 0,
         quartos: quartos || null,
         banheiros: banheiros || null,
         vagas: vagas !== undefined ? vagas : null,
@@ -273,7 +273,7 @@ async function saveToDb(bbUrl, bbKey, listings) {
       body: JSON.stringify(batch),
     });
     const json = await res.json().catch(() => ({}));
-    if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
+    if (!res.ok || json.error) throw new Error(json.error?.message || JSON.stringify(json.error) || `HTTP ${res.status}`);
   }
 }
 
