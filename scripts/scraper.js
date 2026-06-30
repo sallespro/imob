@@ -326,20 +326,35 @@ async function downloadImages(listings) {
 async function geocodeListings(listings) {
   const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
   const UA = 'imob-floripa/1.0 (cloud2pilot@gmail.com)';
-  let ok = 0, miss = 0;
 
+  // Build unique queries to avoid hitting Nominatim for every duplicate address
+  const cache = new Map(); // query -> {lat, lng} | null
+  const toFetch = [];
   for (const l of listings) {
-    if (l.lat && l.lng) continue; // already geocoded
+    if (l.lat && l.lng) continue;
     const query = l.endereco
       ? `${l.endereco}, ${l.bairro}, Florianópolis, SC, Brasil`
       : `${l.bairro}, Florianópolis, SC, Brasil`;
+    if (!cache.has(query)) {
+      cache.set(query, null);
+      toFetch.push(query);
+    }
+  }
+
+  console.log(`  Geocoding ${toFetch.length} unique addresses (${listings.filter(l => !l.lat).length} listings)...`);
+  let ok = 0, miss = 0;
+
+  for (let i = 0; i < toFetch.length; i++) {
+    const query = toFetch[i];
+    if ((i + 1) % 10 === 0 || i === toFetch.length - 1) {
+      process.stdout.write(`\r  Geocoding: ${i + 1}/${toFetch.length} — found:${ok} miss:${miss}   `);
+    }
     try {
       const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=br`;
       const res = await fetch(url, { headers: { 'User-Agent': UA } });
       const data = await res.json();
       if (data[0]) {
-        l.lat = parseFloat(data[0].lat);
-        l.lng = parseFloat(data[0].lon);
+        cache.set(query, { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) });
         ok++;
       } else {
         miss++;
@@ -347,10 +362,19 @@ async function geocodeListings(listings) {
     } catch {
       miss++;
     }
-    // Nominatim policy: max 1 req/sec
     await new Promise(r => setTimeout(r, 1100));
   }
-  console.log(`Geocoded: ${ok} found, ${miss} not found`);
+  console.log(`\n  Done: ${ok} found, ${miss} not found`);
+
+  // Apply cached coords back to all listings
+  for (const l of listings) {
+    if (l.lat && l.lng) continue;
+    const query = l.endereco
+      ? `${l.endereco}, ${l.bairro}, Florianópolis, SC, Brasil`
+      : `${l.bairro}, Florianópolis, SC, Brasil`;
+    const coords = cache.get(query);
+    if (coords) { l.lat = coords.lat; l.lng = coords.lng; }
+  }
 }
 
 async function saveScraperRun(bbUrl, bbKey, filters, totalFound) {
