@@ -26,50 +26,59 @@ let authInitialized = false;
 export async function initAuth() {
   if (authInitialized) return;
   authInitialized = true;
-  // Probe the REST API to confirm BusyBase is up
   await bbFetch('/properties?limit=1');
 }
 
+// Load ALL properties from DB, then filter client-side.
+// This avoids BusyBase's string-based numeric comparison bugs.
 export async function getProperties(filters = {}) {
-  const params = new URLSearchParams();
-  params.set('order', 'preco_venda.asc');
-  params.set('limit', '1000');
-
-  if (filters.bairro?.length) {
-    params.set(`in.bairro`, filters.bairro.join(','));
-  }
-  if (filters.quartos) {
-    params.set(`gte.quartos`, parseInt(filters.quartos));
-  }
-  if (filters.tipoImovel?.length) {
-    params.set(`in.tipo`, filters.tipoImovel.join(','));
-  }
-  if (filters.precoMin) {
-    params.set(`gte.preco_venda`, parseFloat(filters.precoMin));
-  }
-  if (filters.precoMax) {
-    params.set(`lte.preco_venda`, parseFloat(filters.precoMax));
-  }
-  if (filters.vagas !== null && filters.vagas !== undefined && filters.vagas !== '') {
-    if (filters.vagas === '0') {
-      params.set('eq.vagas', '0');
-    } else {
-      params.set(`gte.vagas`, parseInt(filters.vagas));
-    }
-  }
-  if (filters.banheiros) {
-    params.set(`gte.banheiros`, parseInt(filters.banheiros));
-  }
-  if (filters.areaMin) {
-    params.set(`gte.area_m2`, parseFloat(filters.areaMin));
-  }
-  if (filters.areaMax) {
-    params.set(`lte.area_m2`, parseFloat(filters.areaMax));
-  }
-
-  let result = await bbFetch(`/properties?${params.toString()}`);
+  // Fetch everything (BusyBase has a patched limit of 100000)
+  let result = await bbFetch('/properties?limit=100000');
   if (!Array.isArray(result)) result = [];
 
+  // Client-side filtering
+  return applyViewFilters(result, filters);
+}
+
+export function applyViewFilters(data, filters = {}) {
+  let result = [...data];
+
+  if (filters.bairro?.length) {
+    const bairrosLower = filters.bairro.map(b => b.toLowerCase());
+    result = result.filter(p => bairrosLower.includes((p.bairro || '').toLowerCase()));
+  }
+  if (filters.quartos) {
+    const min = parseInt(filters.quartos);
+    result = result.filter(p => (p.quartos || 0) >= min);
+  }
+  if (filters.tipoImovel?.length) {
+    const typesLower = filters.tipoImovel.map(t => t.toLowerCase());
+    result = result.filter(p => typesLower.includes((p.tipo || '').toLowerCase()));
+  }
+  if (filters.precoMin) {
+    const min = parseFloat(filters.precoMin);
+    result = result.filter(p => (p.preco_venda || 0) >= min);
+  }
+  if (filters.precoMax) {
+    const max = parseFloat(filters.precoMax);
+    result = result.filter(p => (p.preco_venda || 0) <= max);
+  }
+  if (filters.vagas !== null && filters.vagas !== undefined && filters.vagas !== '') {
+    const min = parseInt(filters.vagas);
+    result = result.filter(p => (p.vagas || 0) >= min);
+  }
+  if (filters.banheiros) {
+    const min = parseInt(filters.banheiros);
+    result = result.filter(p => (p.banheiros || 0) >= min);
+  }
+  if (filters.areaMin) {
+    const min = parseFloat(filters.areaMin);
+    result = result.filter(p => (p.area_m2 || 0) >= min);
+  }
+  if (filters.areaMax) {
+    const max = parseFloat(filters.areaMax);
+    result = result.filter(p => (p.area_m2 || 0) <= max);
+  }
   if (filters.comodidades?.length) {
     result = result.filter(p => {
       const feats = JSON.parse(p.features || '[]').map(f => f.toLowerCase());
@@ -85,8 +94,10 @@ export async function getProperties(filters = {}) {
   if (filters.exclusivo) {
     result = result.filter(p => JSON.parse(p.tags || '[]').includes('exclusivo'));
   }
-  if (filters.mobiliado) {
+  if (filters.mobiliado === 'Sim') {
     result = result.filter(p => JSON.parse(p.tags || '[]').includes('mobiliado'));
+  } else if (filters.mobiliado === 'Semi') {
+    result = result.filter(p => JSON.parse(p.tags || '[]').includes('semi-mobiliado'));
   }
 
   return result;
@@ -117,22 +128,4 @@ export async function insertScraperRun({ filters, total_found }) {
     headers: { Prefer: 'return=minimal' },
     body: JSON.stringify({ filters, total_found, ran_at: new Date().toISOString() }),
   });
-}
-
-export async function getStats() {
-  const data = await bbFetch('/properties?limit=10000');
-  if (!Array.isArray(data) || !data.length) return null;
-
-  const prices = data.map(p => p.preco_venda).filter(Boolean);
-  const bairros = [...new Set(data.map(p => p.bairro).filter(Boolean))];
-  const tipos = [...new Set(data.map(p => p.tipo).filter(Boolean))];
-
-  return {
-    total: data.length,
-    avgPrice: prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : 0,
-    minPrice: prices.length ? Math.min(...prices) : 0,
-    maxPrice: prices.length ? Math.max(...prices) : 0,
-    bairros,
-    tipos,
-  };
 }

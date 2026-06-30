@@ -15,9 +15,12 @@
     "axios": "^1.18.1",
     "busybase": "^1.0.0",
     "cheerio": "^1.2.0",
+    "leaflet": "^1.9.4",
     "lucide-react": "^1.22.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "react-leaflet": "^5.0.0",
+    "recharts": "^3.9.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",

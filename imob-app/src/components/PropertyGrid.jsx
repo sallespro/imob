@@ -1,5 +1,6 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import PropertyCard from './PropertyCard';
+import QuickFilters from './QuickFilters';
 import { SORT_OPTIONS } from '../lib/constants';
 
 const PAGE_SIZE = 24;
@@ -48,6 +49,7 @@ export default function PropertyGrid({ properties, filters, onFiltersChange, isL
 
   return (
     <div className="property-grid-wrapper">
+      <QuickFilters filters={filters} onChange={onFiltersChange} properties={properties} />
       <div className="grid-toolbar">
         <span className="grid-count">{sorted.length} imóveis</span>
         <select

@@ -6,19 +6,39 @@ import http from 'http';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import fs from 'fs';
 
 const PORT = 3001;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const IMAGES_DIR = path.join(__dirname, 'images');
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
   'Content-Type': 'application/json',
 };
 
 let runningProcess = null;
 let lastLog = [];
+let lastExitCode = null;
+
+let seedProcess = null;
+let seedLog = [];
+let seedExitCode = null;
+
+function startSeed(force = false) {
+  if (seedProcess || runningProcess) return false;
+  const args = ['seed.mjs'];
+  if (force) args.push('--force');
+  seedLog = [];
+  seedExitCode = null;
+  seedProcess = spawn('node', args, { cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
+  seedProcess.stdout.on('data', d => { const l = d.toString().trim(); if (l) { console.log('[seed]', l); seedLog.push(l); } });
+  seedProcess.stderr.on('data', d => { const l = d.toString().trim(); if (l) { console.error('[seed]', l); seedLog.push('ERR: ' + l); } });
+  seedProcess.on('close', code => { seedExitCode = code; seedProcess = null; });
+  return true;
+}
 
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
@@ -26,9 +46,36 @@ const server = http.createServer((req, res) => {
     return res.end();
   }
 
+  // Serve local WebP images
+  if (req.method === 'GET' && req.url?.startsWith('/images/')) {
+    const filename = path.basename(req.url);
+    const filepath = path.join(IMAGES_DIR, filename);
+    if (!filename.endsWith('.webp') || !fs.existsSync(filepath)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      return res.end('Not found');
+    }
+    res.writeHead(200, {
+      'Content-Type': 'image/webp',
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+    });
+    return fs.createReadStream(filepath).pipe(res);
+  }
+
+  if (req.method === 'GET' && req.url === '/seed/status') {
+    res.writeHead(200, CORS_HEADERS);
+    return res.end(JSON.stringify({ running: !!seedProcess, log: seedLog.slice(-20), exitCode: seedExitCode }));
+  }
+
+  if (req.method === 'POST' && req.url === '/seed/force') {
+    const started = startSeed(true);
+    res.writeHead(started ? 200 : 409, CORS_HEADERS);
+    return res.end(JSON.stringify(started ? { started: true } : { error: 'Already running' }));
+  }
+
   if (req.method === 'GET' && req.url === '/scrape/status') {
     res.writeHead(200, CORS_HEADERS);
-    return res.end(JSON.stringify({ running: !!runningProcess, log: lastLog.slice(-20) }));
+    return res.end(JSON.stringify({ running: !!runningProcess, log: lastLog.slice(-20), exitCode: lastExitCode }));
   }
 
   if (req.method === 'POST' && req.url === '/scrape') {
@@ -59,6 +106,7 @@ const server = http.createServer((req, res) => {
       for (const t of (opts.tipoImovel || [])) scriptArgs.push(`--tipoImovel=${t}`);
 
       lastLog = [];
+      lastExitCode = null;
       console.log('[scrape-server] Starting scraper with args:', scriptArgs.slice(1).join(' '));
 
       runningProcess = spawn('node', scriptArgs, {
@@ -76,6 +124,7 @@ const server = http.createServer((req, res) => {
       });
       runningProcess.on('close', code => {
         console.log('[scrape-server] Scraper exited with code', code);
+        lastExitCode = code;
         runningProcess = null;
       });
 
@@ -91,4 +140,9 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[scrape-server] Listening on http://localhost:${PORT}`);
+
+  if (process.argv.includes('--seed')) {
+    console.log('[scrape-server] --seed flag detected, checking dataset...');
+    startSeed(false);
+  }
 });

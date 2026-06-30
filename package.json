@@ -3,12 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "concurrently --kill-others-on-fail -n busybase,vite,scraper -c cyan,green,yellow \"bunx busybase serve --dir busybase_data\" \"npm run dev --prefix imob-app\" \"node scrape-server.mjs\"",
+    "start": "concurrently --kill-others-on-fail -n busybase,vite,scraper -c cyan,green,yellow \"bunx busybase serve --dir busybase_data\" \"npm run dev --prefix imob-app\" \"node scrape-server.mjs --seed\"",
+    "seed": "node seed.mjs",
+    "seed:force": "node seed.mjs --force",
+    "geocode": "node geocode.mjs",
+    "geocode:all": "node geocode.mjs --all",
     "test": "playwright test",
     "scrape": "node scripts/scraper.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0",
     "concurrently": "^10.0.3"
+  },
+  "dependencies": {
+    "sharp": "^0.35.2"
   }
 }

@@ -21,8 +21,13 @@ export default function PropertyCard({ property }) {
     <div className="property-card">
       {/* Image / placeholder */}
       <div className="property-image">
-        {property.image_url ? (
-          <img src={property.image_url} alt={property.title} loading="lazy" />
+        {(property.image_local || property.image_url) ? (
+          <img
+            src={property.image_local ? `http://localhost:3001${property.image_local}` : property.image_url}
+            alt={property.title}
+            loading="lazy"
+            onError={e => { if (property.image_url && e.target.src !== property.image_url) e.target.src = property.image_url; }}
+          />
         ) : (
           <div className="property-image-placeholder">
             <span>{property.tipo}</span>
@@ -60,6 +65,17 @@ export default function PropertyCard({ property }) {
         <div className="property-location">
           <MapPin size={12} />
           <span>{[property.bairro, property.cidade].filter(Boolean).join(', ')}</span>
+          {property.lat && property.lng && (
+            <a
+              href={`https://www.google.com/maps?q=${property.lat},${property.lng}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="map-link"
+              title="Ver no mapa"
+            >
+              📍
+            </a>
+          )}
         </div>
 
         <div className="property-metrics">

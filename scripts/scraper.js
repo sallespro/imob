@@ -34,6 +34,14 @@
 
 import { chromium } from 'playwright';
 import { createClient } from '@supabase/supabase-js';
+import sharp from 'sharp';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const IMAGES_DIR = path.join(__dirname, '..', 'images');
+if (!fs.existsSync(IMAGES_DIR)) fs.mkdirSync(IMAGES_DIR, { recursive: true });
 
 const SITE_BASE = 'https://www.auxiliadorapredial.com.br';
 const PAGE_SIZE = 21; // listings per page on the site
@@ -87,10 +95,10 @@ function parseArgs(argv) {
 function buildUrl(args, page = 1) {
   const path = `/${args.transacao}/${args.categoria}/${args.cidade}`;
   const params = new URLSearchParams();
-  if (page > 1) params.set('pagina', String(page));
+  if (page > 1) params.set('page', String(page));
   if (args.quartos) params.set('quartos', args.quartos);
   for (const t of args.tipoImovel) params.append('tipoImovel', t);
-  for (const b of args.bairro) params.append('bairro', b);
+  if (args.bairro.length > 0) params.set('bairro', args.bairro.join(','));
   if (args.precoMin) params.set('precoMin', args.precoMin);
   if (args.precoMax) params.set('precoMax', args.precoMax);
   if (args.vagas) params.set('vagas', args.vagas);
@@ -220,6 +228,19 @@ async function extractListingsFromPage(page) {
       ];
       const features = knownFeatures.filter(f => text.includes(f));
 
+      // Street: line before the "bairro, Florianópolis" line
+      let endereco = null;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].match(/,\s*Florian[oó]polis/i) && i > 0) {
+          const candidate = lines[i - 1];
+          // must look like a street (has letters, not just a price/number)
+          if (/[a-zA-ZÀ-ú]/.test(candidate) && !candidate.match(/^R\$/)) {
+            endereco = candidate.trim();
+          }
+          break;
+        }
+      }
+
       // Title from first lines
       const titleLine = lines.find(l => l.includes('para comprar') || l.includes('para alugar')) || tipo;
 
@@ -230,12 +251,13 @@ async function extractListingsFromPage(page) {
         tipo,
         bairro: bairro || '',
         cidade,
+        endereco: endereco || '',
         preco_venda: precoVenda || 0,
         preco_original: precoOriginal || 0,
         area_m2: areaN || 0,
-        quartos: quartos || null,
-        banheiros: banheiros || null,
-        vagas: vagas !== undefined ? vagas : null,
+        quartos: quartos || 0,
+        banheiros: banheiros || 0,
+        vagas: vagas !== undefined ? vagas : 0,
         features: JSON.stringify(features),
         tags: JSON.stringify(tags),
         image_url: imageUrl,
@@ -275,6 +297,60 @@ async function saveToDb(bbUrl, bbKey, listings) {
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.error) throw new Error(json.error?.message || JSON.stringify(json.error) || `HTTP ${res.status}`);
   }
+}
+
+async function downloadImages(listings) {
+  let downloaded = 0, skipped = 0, failed = 0;
+  for (const listing of listings) {
+    if (!listing.image_url) continue;
+    const dest = path.join(IMAGES_DIR, `${listing.code}.webp`);
+    if (fs.existsSync(dest)) {
+      listing.image_local = `/images/${listing.code}.webp`;
+      skipped++;
+      continue;
+    }
+    try {
+      const res = await fetch(listing.image_url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      await sharp(buf).resize(600, 400, { fit: 'cover' }).webp({ quality: 80 }).toFile(dest);
+      listing.image_local = `/images/${listing.code}.webp`;
+      downloaded++;
+    } catch (err) {
+      failed++;
+    }
+  }
+  console.log(`Images: ${downloaded} downloaded, ${skipped} cached, ${failed} failed`);
+}
+
+async function geocodeListings(listings) {
+  const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+  const UA = 'imob-floripa/1.0 (cloud2pilot@gmail.com)';
+  let ok = 0, miss = 0;
+
+  for (const l of listings) {
+    if (l.lat && l.lng) continue; // already geocoded
+    const query = l.endereco
+      ? `${l.endereco}, ${l.bairro}, Florianópolis, SC, Brasil`
+      : `${l.bairro}, Florianópolis, SC, Brasil`;
+    try {
+      const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=br`;
+      const res = await fetch(url, { headers: { 'User-Agent': UA } });
+      const data = await res.json();
+      if (data[0]) {
+        l.lat = parseFloat(data[0].lat);
+        l.lng = parseFloat(data[0].lon);
+        ok++;
+      } else {
+        miss++;
+      }
+    } catch {
+      miss++;
+    }
+    // Nominatim policy: max 1 req/sec
+    await new Promise(r => setTimeout(r, 1100));
+  }
+  console.log(`Geocoded: ${ok} found, ${miss} not found`);
 }
 
 async function saveScraperRun(bbUrl, bbKey, filters, totalFound) {
@@ -380,6 +456,13 @@ async function main() {
     }
 
     console.log(`\n✅ Total unique listings scraped: ${allListings.length}`);
+
+    if (allListings.length) {
+      console.log('\nDownloading images...');
+      await downloadImages(allListings);
+      console.log('\nGeocoding addresses...');
+      await geocodeListings(allListings);
+    }
 
     if (args.save && allListings.length) {
       console.log('\nSaving to BusyBase...');

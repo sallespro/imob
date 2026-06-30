@@ -1,44 +1,77 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import FilterPanel from './components/FilterPanel';
 import PropertyGrid from './components/PropertyGrid';
 import StatsBar from './components/StatsBar';
+import VizDrawer from './components/VizDrawer';
 import ExtractModal from './components/ExtractModal';
 import { DEFAULT_FILTERS } from './lib/constants';
-import { initAuth, getProperties } from './lib/db';
+import { initAuth, getProperties, applyViewFilters } from './lib/db';
 import { buildExternalUrl } from './lib/scraper';
 import './App.css';
 
 export default function App() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
-  const [properties, setProperties] = useState([]);
+  const [allProperties, setAllProperties] = useState([]); // all from DB, unfiltered
+  const [properties, setProperties] = useState([]);       // filtered view
   const [isLoading, setIsLoading] = useState(false);
   const [showExtractModal, setShowExtractModal] = useState(false);
   const [extractStatus, setExtractStatus] = useState('idle');
   const [dbReady, setDbReady] = useState(false);
   const [dbError, setDbError] = useState(null);
+  const [seedStatus, setSeedStatus] = useState('idle'); // 'idle' | 'running' | 'done' | 'error'
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
 
   useEffect(() => {
     initAuth()
       .then(() => setDbReady(true))
       .catch(err => {
         console.warn('BusyBase not available:', err.message);
-        setDbError('BusyBase não disponível. Inicie com: bunx busybase serve');
+        setDbError('BusyBase não disponível. Inicie com: npm run start');
       });
+
+    // Poll seed status on startup
+    const pollSeed = setInterval(async () => {
+      try {
+        const r = await fetch('http://localhost:3001/seed/status');
+        const s = await r.json();
+        if (s.running) {
+          setSeedStatus('running');
+        } else if (s.exitCode === 0) {
+          setSeedStatus('done');
+          clearInterval(pollSeed);
+          // Reload data after seed completes
+          setTimeout(() => loadAllProperties(), 500);
+        } else if (s.exitCode !== null) {
+          setSeedStatus('error');
+          clearInterval(pollSeed);
+        } else {
+          setSeedStatus('idle');
+        }
+      } catch {}
+    }, 2000);
+    return () => clearInterval(pollSeed);
   }, []);
 
+  // Load all data once on init and after extraction
   useEffect(() => {
     if (!dbReady) return;
-    loadProperties();
-  }, [filters, dbReady]);
+    loadAllProperties();
+  }, [dbReady]);
 
-  async function loadProperties() {
+  // Apply view filters client-side whenever filters or allProperties change
+  useEffect(() => {
+    setProperties(applyViewFilters(allProperties, filters));
+  }, [filters, allProperties]);
+
+  async function loadAllProperties() {
     setIsLoading(true);
     try {
-      const data = await getProperties(filters);
-      setProperties(data);
+      const data = await getProperties(); // loads all, no filters
+      setAllProperties(data);
     } catch (err) {
       console.error('Error loading properties:', err);
-      setProperties([]);
+      setAllProperties([]);
     } finally {
       setIsLoading(false);
     }
@@ -47,24 +80,24 @@ export default function App() {
   async function runExtraction() {
     setExtractStatus('running');
     try {
-      // Trigger the Playwright scraper via local scrape-server (port 3001)
+      const f = filtersRef.current;
       const resp = await fetch('http://localhost:3001/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transacao: filters.transacao,
-          categoria: filters.categoria,
-          cidade: filters.cidade || 'sc+florianopolis',
-          bairro: filters.bairro || [],
-          quartos: filters.quartos || null,
-          tipoImovel: filters.tipoImovel || [],
-          precoMin: filters.precoMin || null,
-          precoMax: filters.precoMax || null,
-          vagas: filters.vagas ?? null,
-          banheiros: filters.banheiros || null,
-          areaMin: filters.areaMin || null,
-          areaMax: filters.areaMax || null,
-          maxPages: filters.maxPages ? parseInt(filters.maxPages) : null,
+          transacao: f.transacao,
+          categoria: f.categoria,
+          cidade: f.cidade || 'sc+florianopolis',
+          bairro: f.bairro || [],
+          quartos: f.quartos || null,
+          tipoImovel: f.tipoImovel || [],
+          precoMin: f.precoMin || null,
+          precoMax: f.precoMax || null,
+          vagas: f.vagas ?? null,
+          banheiros: f.banheiros || null,
+          areaMin: f.areaMin || null,
+          areaMax: f.areaMax || null,
+          maxPages: f.maxPages ? parseInt(f.maxPages) : null,
         }),
       });
 
@@ -75,7 +108,6 @@ export default function App() {
 
       console.log('[Scraper] Scrape job started — check terminal for progress');
 
-      // Poll status until done
       await new Promise((resolve, reject) => {
         const interval = setInterval(async () => {
           try {
@@ -86,7 +118,11 @@ export default function App() {
             }
             if (!status.running) {
               clearInterval(interval);
-              resolve();
+              if (status.exitCode !== null && status.exitCode !== 0) {
+                reject(new Error(status.log?.slice(-3).join(' | ') || `Scraper exited with code ${status.exitCode}`));
+              } else {
+                resolve();
+              }
             }
           } catch (e) {
             clearInterval(interval);
@@ -96,7 +132,8 @@ export default function App() {
       });
 
       setExtractStatus('done');
-      await loadProperties();
+      // Reload all data from DB after extraction
+      await loadAllProperties();
     } catch (err) {
       console.error('[Scraper] Error:', err);
       setExtractStatus('error');
@@ -113,7 +150,33 @@ export default function App() {
         </div>
         <div className="header-status">
           {dbError && <span className="db-error">⚠ {dbError}</span>}
-          {dbReady && <span className="db-ok">✓ BusyBase</span>}
+          {dbReady && (
+            <span className="db-ok">
+              ✓ BusyBase {allProperties.length > 0 && `· ${allProperties.length} imóveis`}
+            </span>
+          )}
+          {seedStatus === 'running' && (
+            <span className="seed-status running">Seed em andamento...</span>
+          )}
+          {seedStatus === 'error' && (
+            <span className="seed-status error">Seed falhou</span>
+          )}
+          <button
+            className="btn-reseed"
+            title="Re-seed: limpar DB e re-extrair dataset padrão (Campeche, 3+ quartos)"
+            disabled={seedStatus === 'running' || extractStatus === 'running'}
+            onClick={async () => {
+              if (!confirm('Limpar DB e re-extrair dataset padrão (Campeche, 3+ quartos)?')) return;
+              setSeedStatus('running');
+              try {
+                await fetch('http://localhost:3001/seed/force', { method: 'POST' });
+              } catch (e) {
+                setSeedStatus('error');
+              }
+            }}
+          >
+            Re-seed
+          </button>
         </div>
       </header>
 
@@ -123,6 +186,7 @@ export default function App() {
           onChange={setFilters}
           onExtract={() => { setExtractStatus('idle'); setShowExtractModal(true); }}
           isExtracting={extractStatus === 'running'}
+          allProperties={allProperties}
         />
         <main className="app-main">
           <StatsBar properties={properties} />
@@ -133,6 +197,7 @@ export default function App() {
             isLoading={isLoading}
           />
         </main>
+        <VizDrawer properties={properties} />
       </div>
 
       {showExtractModal && (

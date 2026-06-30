@@ -6,10 +6,10 @@ export function buildExternalUrl(filters, page = 1) {
   const cidade = filters.cidade || 'sc+florianopolis';
   const path = `/${transacao}/${categoria}/${cidade}`;
   const params = new URLSearchParams();
-  if (page > 1) params.set('pagina', String(page));
+  if (page > 1) params.set('page', String(page));
   if (filters.quartos) params.set('quartos', filters.quartos);
   for (const t of (filters.tipoImovel || [])) params.append('tipoImovel', t);
-  for (const b of (filters.bairro || [])) params.append('bairro', b);
+  if ((filters.bairro || []).length > 0) params.set('bairro', filters.bairro.join(','));
   if (filters.precoMin) params.set('precoMin', filters.precoMin);
   if (filters.precoMax) params.set('precoMax', filters.precoMax);
   if (filters.vagas) params.set('vagas', String(filters.vagas));
