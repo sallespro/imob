@@ -24,7 +24,7 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
                 <AlertCircle size={14} />
                 <span>
                   A extração usa Playwright (navegador headless) via scrape-server local em
-                  <code>localhost:5174</code>. Certifique-se de que o BusyBase está ativo em <code>localhost:54321</code>.
+                  <code>localhost:3001</code>. Certifique-se de que o BusyBase está ativo em <code>localhost:54321</code>.
                 </span>
               </div>
 

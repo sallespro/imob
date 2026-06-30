@@ -47,8 +47,8 @@ export default function App() {
   async function runExtraction() {
     setExtractStatus('running');
     try {
-      // Trigger the Playwright scraper via local scrape-server (port 5174)
-      const resp = await fetch('http://localhost:5174/scrape', {
+      // Trigger the Playwright scraper via local scrape-server (port 3001)
+      const resp = await fetch('http://localhost:3001/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -79,7 +79,7 @@ export default function App() {
       await new Promise((resolve, reject) => {
         const interval = setInterval(async () => {
           try {
-            const statusResp = await fetch('http://localhost:5174/scrape/status');
+            const statusResp = await fetch('http://localhost:3001/scrape/status');
             const status = await statusResp.json();
             if (status.log?.length) {
               console.log('[Scraper]', status.log[status.log.length - 1]);

@@ -1,13 +1,13 @@
 /**
  * Tiny HTTP server that exposes POST /scrape to trigger the Playwright scraper.
- * Runs on port 5174 alongside Vite (5173) and BusyBase (54321).
+ * Runs on port 3001 alongside Vite (5173) and BusyBase (54321).
  */
 import http from 'http';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
-const PORT = 5174;
+const PORT = 3001;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CORS_HEADERS = {
