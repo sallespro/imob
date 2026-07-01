@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "concurrently --kill-others-on-fail -n busybase,vite,scraper -c cyan,green,yellow \"bunx busybase serve --dir busybase_data\" \"npm run dev --prefix imob-app\" \"node scrape-server.mjs --seed\"",
+    "start": "concurrently --kill-others-on-fail -n api,vite -c cyan,green \"node scrape-server.mjs --seed\" \"npm run dev --prefix imob-app\"",
     "seed": "node seed.mjs",
     "seed:force": "node seed.mjs --force",
     "geocode": "node geocode.mjs",
@@ -16,6 +16,7 @@
     "concurrently": "^10.0.3"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "sharp": "^0.35.2"
   }
 }

@@ -4,70 +4,92 @@ import PropertyGrid from './components/PropertyGrid';
 import StatsBar from './components/StatsBar';
 import VizDrawer from './components/VizDrawer';
 import ExtractModal from './components/ExtractModal';
+import DatasetManager from './components/DatasetManager';
 import { DEFAULT_FILTERS } from './lib/constants';
-import { initAuth, getProperties, applyViewFilters } from './lib/db';
+import { initAuth, getProperties, applyViewFilters, listDatasets, getActiveDataset, switchDataset } from './lib/db';
 import { buildExternalUrl } from './lib/scraper';
 import './App.css';
 
 export default function App() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
-  const [allProperties, setAllProperties] = useState([]); // all from DB, unfiltered
-  const [properties, setProperties] = useState([]);       // filtered view
+  const [allProperties, setAllProperties] = useState([]);
+  const [properties, setProperties] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showExtractModal, setShowExtractModal] = useState(false);
+  const [showDatasets, setShowDatasets] = useState(false);
   const [extractStatus, setExtractStatus] = useState('idle');
-  const [dbReady, setDbReady] = useState(false);
-  const [dbError, setDbError] = useState(null);
-  const [seedStatus, setSeedStatus] = useState('idle'); // 'idle' | 'running' | 'done' | 'error'
+  const [apiReady, setApiReady] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const [scrapeStatus, setScrapeStatus] = useState({ running: false });
+  const [activeDataset, setActiveDataset] = useState(null);
+  const [datasets, setDatasets] = useState([]);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
 
   useEffect(() => {
-    initAuth()
-      .then(() => setDbReady(true))
-      .catch(err => {
-        console.warn('BusyBase not available:', err.message);
-        setDbError('BusyBase não disponível. Inicie com: npm run start');
-      });
-
-    // Poll seed status on startup
-    const pollSeed = setInterval(async () => {
+    // Wait for the API server to be ready
+    let attempts = 0;
+    const tryConnect = async () => {
       try {
-        const r = await fetch('http://localhost:3001/seed/status');
-        const s = await r.json();
-        if (s.running) {
-          setSeedStatus('running');
-        } else if (s.exitCode === 0) {
-          setSeedStatus('done');
-          clearInterval(pollSeed);
-          // Reload data after seed completes
-          setTimeout(() => loadAllProperties(), 500);
-        } else if (s.exitCode !== null) {
-          setSeedStatus('error');
-          clearInterval(pollSeed);
-        } else {
-          setSeedStatus('idle');
-        }
-      } catch {}
-    }, 2000);
-    return () => clearInterval(pollSeed);
+        await initAuth();
+        setApiReady(true);
+        setApiError(null);
+        refreshDatasets();
+      } catch {
+        attempts++;
+        if (attempts < 20) setTimeout(tryConnect, 1500);
+        else setApiError('API não disponível. Inicie com: npm run start');
+      }
+    };
+    tryConnect();
   }, []);
 
-  // Load all data once on init and after extraction
   useEffect(() => {
-    if (!dbReady) return;
+    if (!apiReady) return;
     loadAllProperties();
-  }, [dbReady]);
+  }, [apiReady]);
 
-  // Apply view filters client-side whenever filters or allProperties change
   useEffect(() => {
     setProperties(applyViewFilters(allProperties, filters));
   }, [filters, allProperties]);
 
+  // Poll scraper status while running
+  useEffect(() => {
+    if (!apiReady) return;
+    let interval;
+    const poll = async () => {
+      try {
+        const r = await fetch('http://localhost:3001/scrape/status');
+        const s = await r.json();
+        setScrapeStatus(s);
+        if (!s.running && extractStatus === 'running') {
+          if (s.exitCode === 0 || s.exitCode === null) {
+            setExtractStatus('done');
+          } else {
+            setExtractStatus('error');
+          }
+          await loadAllProperties();
+          await refreshDatasets();
+        }
+      } catch {}
+    };
+    poll();
+    interval = setInterval(poll, 3000);
+    return () => clearInterval(interval);
+  }, [apiReady, extractStatus]);
+
+  async function refreshDatasets() {
+    try {
+      const [ds, active] = await Promise.all([listDatasets(), getActiveDataset()]);
+      setDatasets(ds);
+      setActiveDataset(active);
+    } catch {}
+  }
+
   async function loadAllProperties() {
     setIsLoading(true);
     try {
-      const data = await getProperties(); // loads all, no filters
+      const data = await getProperties();
       setAllProperties(data);
     } catch (err) {
       console.error('Error loading properties:', err);
@@ -77,7 +99,17 @@ export default function App() {
     }
   }
 
-  async function runExtraction() {
+  async function handleSwitchDataset(name) {
+    try {
+      await switchDataset(name);
+      await refreshDatasets();
+      await loadAllProperties();
+    } catch (err) {
+      console.error('Switch dataset error:', err);
+    }
+  }
+
+  async function runExtraction(opts = {}) {
     setExtractStatus('running');
     try {
       const f = filtersRef.current;
@@ -98,6 +130,7 @@ export default function App() {
           areaMin: f.areaMin || null,
           areaMax: f.areaMax || null,
           maxPages: f.maxPages ? parseInt(f.maxPages) : null,
+          ...opts, // allow dataset override from DatasetManager
         }),
       });
 
@@ -105,40 +138,21 @@ export default function App() {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
-
-      console.log('[Scraper] Scrape job started — check terminal for progress');
-
-      await new Promise((resolve, reject) => {
-        const interval = setInterval(async () => {
-          try {
-            const statusResp = await fetch('http://localhost:3001/scrape/status');
-            const status = await statusResp.json();
-            if (status.log?.length) {
-              console.log('[Scraper]', status.log[status.log.length - 1]);
-            }
-            if (!status.running) {
-              clearInterval(interval);
-              if (status.exitCode !== null && status.exitCode !== 0) {
-                reject(new Error(status.log?.slice(-3).join(' | ') || `Scraper exited with code ${status.exitCode}`));
-              } else {
-                resolve();
-              }
-            }
-          } catch (e) {
-            clearInterval(interval);
-            reject(e);
-          }
-        }, 3000);
-      });
-
-      setExtractStatus('done');
-      // Reload all data from DB after extraction
-      await loadAllProperties();
     } catch (err) {
       console.error('[Scraper] Error:', err);
       setExtractStatus('error');
     }
   }
+
+  const statusText = apiError
+    ? apiError
+    : !apiReady
+    ? 'Conectando...'
+    : scrapeStatus.running
+    ? `Extraindo (${scrapeStatus.dataset || activeDataset?.name || '...'})...`
+    : activeDataset
+    ? `${activeDataset.label || activeDataset.name} · ${activeDataset.count} imóveis`
+    : null;
 
   return (
     <div className="app">
@@ -149,36 +163,38 @@ export default function App() {
           <span className="header-sub">Auxiliadora Predial</span>
         </div>
         <div className="header-status">
-          {dbError && <span className="db-error">⚠ {dbError}</span>}
-          {dbReady && (
-            <span className="db-ok">
-              ✓ BusyBase {allProperties.length > 0 && `· ${allProperties.length} imóveis`}
+          {apiError && <span className="db-error">⚠ {apiError}</span>}
+          {statusText && !apiError && (
+            <span className={`db-ok ${scrapeStatus.running ? 'running' : ''}`}>
+              {scrapeStatus.running ? '⏳ ' : '✓ '}{statusText}
             </span>
           )}
-          {seedStatus === 'running' && (
-            <span className="seed-status running">Seed em andamento...</span>
-          )}
-          {seedStatus === 'error' && (
-            <span className="seed-status error">Seed falhou</span>
-          )}
           <button
-            className="btn-reseed"
-            title="Re-seed: limpar DB e re-extrair dataset padrão (Campeche, 3+ quartos)"
-            disabled={seedStatus === 'running' || extractStatus === 'running'}
-            onClick={async () => {
-              if (!confirm('Limpar DB e re-extrair dataset padrão (Campeche, 3+ quartos)?')) return;
-              setSeedStatus('running');
-              try {
-                await fetch('http://localhost:3001/seed/force', { method: 'POST' });
-              } catch (e) {
-                setSeedStatus('error');
-              }
-            }}
+            className="btn-datasets"
+            onClick={() => setShowDatasets(v => !v)}
+            title="Gerenciar datasets"
           >
-            Re-seed
+            Datasets {datasets.length > 0 && `(${datasets.length})`}
           </button>
         </div>
       </header>
+
+      {showDatasets && (
+        <DatasetManager
+          datasets={datasets}
+          activeDataset={activeDataset}
+          scrapeRunning={scrapeStatus.running}
+          onSwitch={handleSwitchDataset}
+          onRefresh={refreshDatasets}
+          onClose={() => setShowDatasets(false)}
+          onScrapeNew={(opts) => {
+            setShowDatasets(false);
+            setShowExtractModal(true);
+            // store dataset target for runExtraction
+            filtersRef._datasetOpts = opts;
+          }}
+        />
+      )}
 
       <div className="app-layout">
         <FilterPanel
@@ -205,7 +221,7 @@ export default function App() {
           filters={filters}
           status={extractStatus}
           onClose={() => { setShowExtractModal(false); setExtractStatus('idle'); }}
-          onConfirm={runExtraction}
+          onConfirm={(opts) => runExtraction({ ...(opts || {}), ...(filtersRef._datasetOpts || {}) })}
         />
       )}
     </div>

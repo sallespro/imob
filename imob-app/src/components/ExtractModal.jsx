@@ -16,15 +16,15 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
           {status === 'idle' && (
             <>
               <p className="modal-desc">
-                Os dados serão extraídos do site da Auxiliadora Predial e salvos no BusyBase local.
+                Os dados serão extraídos do site da Auxiliadora Predial e salvos no dataset ativo.
                 A extração percorre todas as páginas disponíveis com os filtros selecionados.
               </p>
 
               <div className="modal-info">
                 <AlertCircle size={14} />
                 <span>
-                  A extração usa Playwright (navegador headless) via scrape-server local em
-                  <code>localhost:3001</code>. Certifique-se de que o BusyBase está ativo em <code>localhost:54321</code>.
+                  A extração usa Playwright (navegador headless) via scrape-server em
+                  <code>localhost:3001</code>. O progresso aparece no terminal.
                 </span>
               </div>
 
@@ -54,7 +54,7 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
           {status === 'done' && (
             <div className="modal-progress">
               <CheckCircle size={32} color="#22c55e" />
-              <p>Extração concluída! Os dados foram salvos no BusyBase.</p>
+              <p>Extração concluída! Os dados foram salvos no dataset.</p>
               <button className="btn-primary" onClick={onClose}>Fechar</button>
             </div>
           )}
@@ -62,9 +62,9 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
           {status === 'error' && (
             <div className="modal-progress">
               <AlertCircle size={32} color="#ef4444" />
-              <p>Erro durante a extração. Verifique se o BusyBase e o scrape-server estão rodando.</p>
+              <p>Erro durante a extração. Verifique se o scrape-server está rodando.</p>
               <p className="modal-progress-hint">
-                Use <code>npm run start</code> para iniciar todos os servidores.
+                Use <code>npm run start</code> para iniciar os servidores.
               </p>
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={onClose}>Fechar</button>

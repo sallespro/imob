@@ -317,20 +317,83 @@ body { font-family: 'Inter', system-ui, sans-serif; background: #f8fafc; color: 
   background: transparent; border: none; padding: 0;
 }
 
-/* ===== Seed status / re-seed ===== */
-.seed-status {
-  padding: 3px 10px; border-radius: 20px; font-size: 11px;
-}
-.seed-status.running { background: rgba(245,158,11,0.3); color: #fde68a; }
-.seed-status.error   { background: rgba(239,68,68,0.4);  color: #fca5a5; }
+/* ===== Header status / datasets button ===== */
+.db-ok.running { background: rgba(245,158,11,0.4); animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 
-.btn-reseed {
+.btn-datasets {
   padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
   background: rgba(255,255,255,0.15); color: white; border: 1px solid rgba(255,255,255,0.3);
   cursor: pointer; transition: background 0.15s;
 }
-.btn-reseed:hover:not(:disabled) { background: rgba(255,255,255,0.25); }
-.btn-reseed:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-datasets:hover { background: rgba(255,255,255,0.25); }
+
+/* ===== Dataset Manager ===== */
+.dataset-manager-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 1000;
+  display: flex; align-items: flex-start; justify-content: flex-end; padding: 60px 16px 0;
+}
+.dataset-manager {
+  background: white; border-radius: 12px; width: 480px; max-height: 80vh;
+  overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  display: flex; flex-direction: column;
+}
+.dataset-manager-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid #e2e8f0;
+}
+.dataset-manager-header h2 { font-size: 16px; font-weight: 700; }
+.dataset-manager-close {
+  background: none; border: none; font-size: 20px; cursor: pointer; color: #94a3b8;
+  line-height: 1; padding: 0 4px;
+}
+.dataset-manager-close:hover { color: #475569; }
+
+.dataset-list { padding: 8px 0; }
+.dataset-empty { padding: 16px 20px; color: #94a3b8; font-size: 13px; }
+.dataset-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; gap: 12px; border-bottom: 1px solid #f1f5f9;
+  transition: background 0.1s;
+}
+.dataset-row:hover { background: #f8fafc; }
+.dataset-row.active { background: #eff6ff; border-left: 3px solid #1e40af; }
+.dataset-info { flex: 1; min-width: 0; }
+.dataset-label { font-size: 13px; font-weight: 600; color: #1e293b; display: block; }
+.dataset-meta { font-size: 11px; color: #94a3b8; }
+.dataset-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.dataset-active-badge {
+  font-size: 10px; font-weight: 700; color: #1e40af; background: #dbeafe;
+  padding: 2px 8px; border-radius: 10px; text-transform: uppercase;
+}
+
+.btn-sm {
+  padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
+  cursor: pointer; border: none; transition: background 0.15s;
+}
+.btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-switch { background: #1e40af; color: white; }
+.btn-switch:hover:not(:disabled) { background: #1e3a8a; }
+.btn-scrape-into { background: #059669; color: white; }
+.btn-scrape-into:hover:not(:disabled) { background: #047857; }
+.btn-delete { background: #fee2e2; color: #dc2626; font-size: 14px; padding: 2px 8px; }
+.btn-delete:hover:not(:disabled) { background: #fecaca; }
+
+.dataset-create { padding: 16px 20px; border-top: 1px solid #e2e8f0; }
+.dataset-create h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; color: #475569; }
+.dataset-create-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dataset-input {
+  flex: 1; min-width: 120px; padding: 6px 10px; border: 1px solid #cbd5e1;
+  border-radius: 6px; font-size: 12px; outline: none;
+}
+.dataset-input:focus { border-color: #1e40af; }
+.btn-create {
+  padding: 6px 14px; background: #1e40af; color: white; border: none;
+  border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.btn-create:hover:not(:disabled) { background: #1e3a8a; }
+.btn-create:disabled { opacity: 0.5; cursor: not-allowed; }
+.dataset-error { color: #dc2626; font-size: 12px; margin-top: 8px; }
 
 /* ===== Quick Filters ===== */
 .quick-filters {

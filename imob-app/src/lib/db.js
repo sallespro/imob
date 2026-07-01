@@ -1,42 +1,20 @@
-import { createClient } from '@supabase/supabase-js';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-const BUSYBASE_URL = import.meta.env.VITE_BUSYBASE_URL || 'http://localhost:54321';
-const BUSYBASE_KEY = import.meta.env.VITE_BUSYBASE_KEY || 'local';
-
-export const db = createClient(BUSYBASE_URL, BUSYBASE_KEY);
-
-const bbHeaders = {
-  'Content-Type': 'application/json',
-  'apikey': BUSYBASE_KEY,
-  'Authorization': `Bearer ${BUSYBASE_KEY}`,
-};
-
-async function bbFetch(path, options = {}) {
-  const res = await fetch(`${BUSYBASE_URL}/rest/v1${path}`, {
+async function apiFetch(path, options = {}) {
+  const res = await fetch(`${API}${path}`, {
     ...options,
-    headers: { ...bbHeaders, ...options.headers },
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
   const json = await res.json();
-  if (json.error) throw new Error(json.error.message || JSON.stringify(json.error));
-  return json.data ?? json;
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
 }
 
-let authInitialized = false;
+export async function initAuth() {}
 
-export async function initAuth() {
-  if (authInitialized) return;
-  authInitialized = true;
-  await bbFetch('/properties?limit=1');
-}
-
-// Load ALL properties from DB, then filter client-side.
-// This avoids BusyBase's string-based numeric comparison bugs.
 export async function getProperties(filters = {}) {
-  // Fetch everything (BusyBase has a patched limit of 100000)
-  let result = await bbFetch('/properties?limit=100000');
+  let result = await apiFetch('/properties');
   if (!Array.isArray(result)) result = [];
-
-  // Client-side filtering
   return applyViewFilters(result, filters);
 }
 
@@ -103,29 +81,26 @@ export function applyViewFilters(data, filters = {}) {
   return result;
 }
 
-export async function getScraperRuns() {
-  try {
-    const data = await bbFetch('/scraper_runs?order=ran_at.desc&limit=20');
-    return Array.isArray(data) ? data : [];
-  } catch {
-    return [];
-  }
+export async function getScraperRuns() { return []; }
+
+// Dataset management
+export async function listDatasets() { return apiFetch('/datasets'); }
+export async function getActiveDataset() { return apiFetch('/datasets/active'); }
+export async function createDataset(name, label) {
+  return apiFetch('/datasets', { method: 'POST', body: JSON.stringify({ name, label }) });
 }
+export async function switchDataset(name) {
+  return apiFetch('/datasets/active', { method: 'POST', body: JSON.stringify({ name }) });
+}
+export async function deleteDataset(name) {
+  return apiFetch(`/datasets/${name}`, { method: 'DELETE' });
+}
+export async function getScrapeStatus() { return apiFetch('/scrape/status'); }
 
 export async function upsertProperties(listings) {
-  for (let i = 0; i < listings.length; i += 50) {
-    await bbFetch('/properties', {
-      method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify(listings.slice(i, i + 50)),
-    });
+  for (let i = 0; i < listings.length; i += 100) {
+    await apiFetch('/properties', { method: 'POST', body: JSON.stringify(listings.slice(i, i + 100)) });
   }
 }
 
-export async function insertScraperRun({ filters, total_found }) {
-  await bbFetch('/scraper_runs', {
-    method: 'POST',
-    headers: { Prefer: 'return=minimal' },
-    body: JSON.stringify({ filters, total_found, ran_at: new Date().toISOString() }),
-  });
-}
+export async function insertScraperRun() {}
