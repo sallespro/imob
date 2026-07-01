@@ -286,7 +286,7 @@ async function saveToDb(bbUrl, bbKey, listings) {
     'Authorization': `Bearer ${bbKey}`,
     'Prefer': 'resolution=merge-duplicates,return=minimal',
   };
-  const batchSize = 50;
+  const batchSize = 20;
   for (let i = 0; i < listings.length; i += batchSize) {
     const batch = listings.slice(i, i + batchSize);
     const res = await fetch(`${bbUrl}/rest/v1/properties`, {
@@ -296,6 +296,10 @@ async function saveToDb(bbUrl, bbKey, listings) {
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.error) throw new Error(json.error?.message || JSON.stringify(json.error) || `HTTP ${res.status}`);
+    // BusyBase's LanceDB layer can crash (detached Arrow buffer) if writes land
+    // back-to-back with no time to settle/compact. Small delay between batches
+    // avoids racing a background compaction against the next insert.
+    if (i + batchSize < listings.length) await new Promise(r => setTimeout(r, 300));
   }
 }
 
@@ -323,18 +327,28 @@ async function downloadImages(listings) {
   console.log(`Images: ${downloaded} downloaded, ${skipped} cached, ${failed} failed`);
 }
 
-async function geocodeListings(listings) {
+async function geocodeOne(query, UA) {
   const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+  const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=br`;
+  const res = await fetch(url, { headers: { 'User-Agent': UA } });
+  const data = await res.json();
+  return data[0] ? { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) } : null;
+}
+
+async function geocodeListings(listings) {
   const UA = 'imob-floripa/1.0 (cloud2pilot@gmail.com)';
 
   // Build unique queries to avoid hitting Nominatim for every duplicate address
+  const fullQuery = l => l.endereco
+    ? `${l.endereco}, ${l.bairro}, Florianópolis, SC, Brasil`
+    : `${l.bairro}, Florianópolis, SC, Brasil`;
+  const bairroQuery = l => `${l.bairro}, Florianópolis, SC, Brasil`;
+
   const cache = new Map(); // query -> {lat, lng} | null
   const toFetch = [];
   for (const l of listings) {
     if (l.lat && l.lng) continue;
-    const query = l.endereco
-      ? `${l.endereco}, ${l.bairro}, Florianópolis, SC, Brasil`
-      : `${l.bairro}, Florianópolis, SC, Brasil`;
+    const query = fullQuery(l);
     if (!cache.has(query)) {
       cache.set(query, null);
       toFetch.push(query);
@@ -350,11 +364,9 @@ async function geocodeListings(listings) {
       process.stdout.write(`\r  Geocoding: ${i + 1}/${toFetch.length} — found:${ok} miss:${miss}   `);
     }
     try {
-      const url = `${NOMINATIM}?q=${encodeURIComponent(query)}&format=json&limit=1&countrycodes=br`;
-      const res = await fetch(url, { headers: { 'User-Agent': UA } });
-      const data = await res.json();
-      if (data[0]) {
-        cache.set(query, { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) });
+      const coords = await geocodeOne(query, UA);
+      if (coords) {
+        cache.set(query, coords);
         ok++;
       } else {
         miss++;
@@ -364,15 +376,48 @@ async function geocodeListings(listings) {
     }
     await new Promise(r => setTimeout(r, 1100));
   }
+
+  // Retry misses with just the bairro — a precise street address often doesn't
+  // exist in OSM's data for Brazilian listings, but the neighborhood usually does.
+  const missedQueries = toFetch.filter(q => cache.get(q) === null);
+  if (missedQueries.length) {
+    const bairroFallbacks = new Map(); // bairroQuery -> {lat,lng} | null
+    const listingsByQuery = new Map();
+    for (const l of listings) {
+      if (l.lat && l.lng) continue;
+      const q = fullQuery(l);
+      if (missedQueries.includes(q) && !listingsByQuery.has(q)) listingsByQuery.set(q, l);
+    }
+    let recovered = 0;
+    for (const query of missedQueries) {
+      const l = listingsByQuery.get(query);
+      if (!l) continue;
+      const bq = bairroQuery(l);
+      if (!bairroFallbacks.has(bq)) {
+        try {
+          bairroFallbacks.set(bq, await geocodeOne(bq, UA));
+        } catch {
+          bairroFallbacks.set(bq, null);
+        }
+        await new Promise(r => setTimeout(r, 1100));
+      }
+      const coords = bairroFallbacks.get(bq);
+      if (coords) {
+        cache.set(query, coords);
+        ok++;
+        miss--;
+        recovered++;
+      }
+    }
+    if (recovered) console.log(`\n  Recovered ${recovered} via bairro-level fallback`);
+  }
+
   console.log(`\n  Done: ${ok} found, ${miss} not found`);
 
   // Apply cached coords back to all listings
   for (const l of listings) {
     if (l.lat && l.lng) continue;
-    const query = l.endereco
-      ? `${l.endereco}, ${l.bairro}, Florianópolis, SC, Brasil`
-      : `${l.bairro}, Florianópolis, SC, Brasil`;
-    const coords = cache.get(query);
+    const coords = cache.get(fullQuery(l));
     if (coords) { l.lat = coords.lat; l.lng = coords.lng; }
   }
 }
