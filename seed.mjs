@@ -11,11 +11,13 @@
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BB_URL = process.env.BUSYBASE_URL || 'http://localhost:54321';
 const BB_KEY = process.env.BUSYBASE_KEY || 'local';
 const FORCE = process.argv.includes('--force');
+const DATA_DIR = path.join(__dirname, 'busybase_data');
 
 const DEFAULT_PARAMS = {
   transacao: 'comprar',
@@ -40,37 +42,30 @@ async function waitForBusyBase(maxWaitMs = 30000) {
 }
 
 async function countProperties() {
-  const res = await fetch(`${BB_URL}/rest/v1/properties?select=code&limit=1`, {
-    headers: { apikey: BB_KEY, Authorization: `Bearer ${BB_KEY}` },
-  });
-  if (!res.ok) return 0;
-  const data = await res.json();
-  return Array.isArray(data) ? data.length : 0;
+  try {
+    const res = await fetch(`${BB_URL}/rest/v1/properties?select=code&limit=5`, {
+      headers: { apikey: BB_KEY, Authorization: `Bearer ${BB_KEY}` },
+    });
+    if (!res.ok) return 0;
+    const data = await res.json();
+    // If BusyBase returns an error object instead of array, table is corrupt
+    if (!Array.isArray(data)) return 0;
+    return data.length;
+  } catch {
+    return 0;
+  }
 }
 
-async function clearProperties() {
-  // BusyBase/LanceDB delete-all: delete with a filter that matches everything
-  // Use a high-limit fetch to get all codes then delete by code
-  console.log('[seed] Clearing existing properties...');
-  const res = await fetch(`${BB_URL}/rest/v1/properties?select=code&limit=100000`, {
-    headers: { apikey: BB_KEY, Authorization: `Bearer ${BB_KEY}` },
-  });
-  if (!res.ok) return;
-  const rows = await res.json();
-  if (!Array.isArray(rows) || !rows.length) return;
-
-  const codes = rows.map(r => r.code).filter(Boolean);
-  // Delete in batches using IN filter
-  const batchSize = 200;
-  for (let i = 0; i < codes.length; i += batchSize) {
-    const batch = codes.slice(i, i + batchSize);
-    const inClause = batch.map(c => `"${c}"`).join(',');
-    await fetch(`${BB_URL}/rest/v1/properties?code=in.(${inClause})`, {
-      method: 'DELETE',
-      headers: { apikey: BB_KEY, Authorization: `Bearer ${BB_KEY}`, Prefer: 'return=minimal' },
-    });
+function wipeLanceTables() {
+  // Wipe Lance table directories directly — the only reliable way to avoid
+  // Arrow schema fragmentation when scrape batches produce mixed-schema files.
+  for (const table of ['properties.lance', 'scraper_runs.lance']) {
+    const dir = path.join(DATA_DIR, table);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+      console.log(`[seed] Wiped ${table}`);
+    }
   }
-  console.log(`[seed] Cleared ${codes.length} properties.`);
 }
 
 function runScraper(params) {
@@ -110,11 +105,14 @@ async function main() {
       console.log(`[seed] Dataset already present (${count}+ properties). Skipping seed.`);
       process.exit(0);
     }
-  } else {
-    await clearProperties();
   }
 
-  console.log('[seed] No data found — seeding default dataset (Campeche, 3+ quartos)...');
+  // Always wipe Lance tables before seeding to prevent Arrow schema fragmentation.
+  // Schema fragmentation (mixed old/new columns across Arrow fragments) causes
+  // "Buffer is already detached" crashes in LanceDB when reading across fragments.
+  wipeLanceTables();
+
+  console.log('[seed] Seeding default dataset (Campeche, 3+ quartos)...');
   await runScraper(DEFAULT_PARAMS);
   console.log('[seed] Seed complete.');
 }
