@@ -6,8 +6,8 @@ function formatPrice(price) {
 }
 
 export default function PropertyCard({ property }) {
-  const features = JSON.parse(property.features || '[]');
-  const tags = JSON.parse(property.tags || '[]');
+  const features = Array.isArray(property.features) ? property.features : JSON.parse(property.features || '[]');
+  const tags = Array.isArray(property.tags) ? property.tags : JSON.parse(property.tags || '[]');
 
   const tagLabels = {
     'novo': { label: 'Novo', color: '#22c55e' },
