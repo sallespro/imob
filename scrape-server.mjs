@@ -195,8 +195,8 @@ function upsertProperties(listings) {
       lng: r.lng ?? null,
       image_url: r.image_url || null,
       local_image: r.local_image || null,
-      tags: JSON.stringify(r.tags || []),
-      features: JSON.stringify(r.features || []),
+      tags: Array.isArray(r.tags) ? JSON.stringify(r.tags) : (r.tags || '[]'),
+      features: Array.isArray(r.features) ? JSON.stringify(r.features) : (r.features || '[]'),
       scraped_at: r.scraped_at || new Date().toISOString(),
     });
   });
@@ -281,13 +281,14 @@ function seedDefaultDataset() {
   }
   setActive(defaultName);
 
-  console.log('[seed] No data found — seeding Campeche 3+ quartos...');
+  console.log('[seed] No data found — seeding Campeche 3+ quartos (2 pages)...');
   startScraper({
     transacao: 'comprar',
     categoria: 'residencial',
     cidade: 'sc+florianopolis',
     bairro: ['Campeche'],
     quartos: '3',
+    maxPages: 2,
   }, defaultName);
 }
 
@@ -397,7 +398,15 @@ const server = http.createServer(async (req, res) => {
   // GET /rest/v1/properties  or  GET /properties
   if (method === 'GET' && (url === '/properties' || url === '/rest/v1/properties')) {
     try {
-      const rows = getDb().prepare('SELECT * FROM properties').all();
+      const parseJsonField = v => {
+        try { const p = JSON.parse(v || '[]'); return Array.isArray(p) ? p : JSON.parse(p); }
+        catch { return []; }
+      };
+      const rows = getDb().prepare('SELECT * FROM properties').all().map(r => ({
+        ...r,
+        tags: parseJsonField(r.tags),
+        features: parseJsonField(r.features),
+      }));
       return send(res, 200, rows);
     } catch (e) {
       return send(res, 500, { error: e.message });
