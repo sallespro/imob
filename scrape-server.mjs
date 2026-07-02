@@ -214,7 +214,11 @@ let scrapeDataset = null; // which dataset is being scraped into
 function startScraper(opts, targetDataset) {
   if (runningProcess) return false;
 
-  const scriptArgs = ['scripts/scraper.js', '--save=false']; // scraper outputs JSON, we handle saving
+  const scriptArgs = [
+    'scripts/scraper.js',
+    `--busybaseUrl=http://localhost:${PORT}`,
+    '--busybaseKey=local',
+  ];
   if (opts.transacao) scriptArgs.push(`--transacao=${opts.transacao}`);
   if (opts.categoria) scriptArgs.push(`--categoria=${opts.categoria}`);
   if (opts.cidade) scriptArgs.push(`--cidade=${opts.cidade}`);
@@ -228,11 +232,6 @@ function startScraper(opts, targetDataset) {
   if (opts.areaMax) scriptArgs.push(`--areaMax=${opts.areaMax}`);
   for (const b of (opts.bairro || [])) scriptArgs.push(`--bairro=${b}`);
   for (const t of (opts.tipoImovel || [])) scriptArgs.push(`--tipoImovel=${t}`);
-
-  // Pass busybase URL so scraper still saves via the REST API (active dataset)
-  scriptArgs.pop(); // remove --save=false — scraper saves to our server
-  scriptArgs.push(`--busybaseUrl=http://localhost:${PORT}`);
-  scriptArgs.push(`--busybaseKey=local`);
 
   lastLog = [];
   lastExitCode = null;
