@@ -1,55 +1,30 @@
 # Imóveis Florianópolis — Data Extractor & Visualizer
 
-Extracts property listings from Auxiliadora Predial and visualizes them in a React app backed by BusyBase (local SQLite via Supabase-compatible API).
+Extracts property listings from Auxiliadora Predial and visualizes them in a React app backed by SQLite. Supports multiple named datasets so you can scrape and compare different searches side-by-side.
 
 ## Quick Start
 
-### 1. Start BusyBase
-
 ```bash
-bunx busybase serve
-# Runs at http://localhost:54321
-```
-
-Get the anon key from the BusyBase startup output (or use the default `anon`).
-
-### 2. Configure environment
-
-```bash
-cp .env.example imob-app/.env
-# Edit imob-app/.env with your VITE_BUSYBASE_URL and VITE_BUSYBASE_KEY
-```
-
-### 3. Start the app
-
-```bash
-cd imob-app
 npm install
-npm run dev
-# Visit http://localhost:5173
+npm run start
+# API server: http://localhost:3001
+# App:        http://localhost:5173
 ```
 
-### 4. Extract data
-
-Click **"Extrair dados"** in the left panel to pull listings from Auxiliadora Predial into BusyBase. Or use the CLI:
-
-```bash
-cd scripts
-npm install
-node scraper.js --quartos 3 --tipoImovel Casa --bairro Campeche --bairro "Novo Campeche"
-```
+On first run, the server auto-seeds a small default dataset (Campeche 3+ quartos, 2 pages). The app connects automatically once data is ready.
 
 ---
 
 ## App Features
 
-- **Left filter panel** — all search options available on the Auxiliadora Predial website
-- **Reset filters** — clears all filters back to defaults
-- **Extract data** — scrapes all pages for the current filter selection, saves to BusyBase
-- **Property grid** — paginated cards (24/page) with sort options
+- **Property grid** — paginated cards with sort options
 - **Stats bar** — live aggregate stats (count, avg/min/max price, avg area)
+- **Filter panel** — all search dimensions available on Auxiliadora Predial
+- **Bairro map** — choropleth of property counts by neighbourhood
+- **Extract modal** — scrape all pages for the current filter selection
+- **Dataset manager** — create, switch, delete, and scrape into named datasets
 
-### Available filters
+### Filters
 
 | Filter | Options |
 |---|---|
@@ -59,7 +34,7 @@ node scraper.js --quartos 3 --tipoImovel Casa --bairro Campeche --bairro "Novo C
 | Quartos | 1+, 2+, 3+, 4+ |
 | Vagas | Sem vaga, 1+, 2+, 3+, 4+ |
 | Banheiros | 1+, 2+, 3+, 4+ |
-| Tipo de imóvel | Casa, Apartamento, Lote/Terreno, Casa em condomínio, etc. |
+| Tipo de imóvel | Casa, Apartamento, Cobertura, Condomínio, etc. |
 | Bairro | ~42 bairros de Florianópolis (multi-select) |
 | Área | Min/Max m² |
 | Mobiliado | Sim / Semi / Não |
@@ -70,40 +45,46 @@ node scraper.js --quartos 3 --tipoImovel Casa --bairro Campeche --bairro "Novo C
 
 ---
 
+## Dataset Management
+
+Open **Datasets** in the header to:
+
+- **Switch** the active dataset (all filters and views reflect its data)
+- **Create** a new named dataset
+- **Extrair** — scrape into a specific dataset using the current filters
+- **Delete** a dataset
+
+Each dataset is a standalone SQLite file in `datasets/`. The active dataset is tracked via `datasets/.active`.
+
+---
+
 ## CLI Scraper
 
+The scraper can also be run directly. It saves results to the API server (port 3001 must be running):
+
+```bash
+node scripts/scraper.js \
+  --quartos 3 \
+  --bairro Campeche \
+  --tipoImovel Casa \
+  --busybaseUrl http://localhost:3001
 ```
-Usage: node scripts/scraper.js [options]
 
-Options:
-  --transacao <comprar|alugar>     Default: comprar
-  --categoria <residencial|comercial>  Default: residencial
-  --estado <sigla>                 Default: sc
-  --cidade <nome>                  Default: florianopolis
-  --bairro <nome>                  Repeatable. e.g. --bairro Campeche --bairro "Novo Campeche"
-  --quartos <1|2|3|4>             Minimum bedrooms
-  --tipoImovel <tipo>              Repeatable. e.g. --tipoImovel Casa --tipoImovel Apartamento
-  --vagas <0|1|2|3|4>            Garage spots (0 = sem vaga)
-  --banheiros <1|2|3|4>          Minimum bathrooms
-  --precoMin <valor>               Minimum price in BRL
-  --precoMax <valor>               Maximum price in BRL
-  --areaMin <m2>                   Minimum area in m²
-  --areaMax <m2>                   Maximum area in m²
-  --mobiliado <sim|semi|nao>       Furnished status
-  --lancamentos <sim|nao>          New developments only
-  --exclusivo                      Exclusive listings only
-  --baixouPreco                    Price-reduced listings only
-  --avaliaImovel                   "Avalia imóvel no negócio" listings
-  --comodidade <nome>              Repeatable amenity filter
-  --maxPages <n>                   Limit pages scraped (default: all)
-  --busybaseUrl <url>              Default: http://localhost:54321
-  --busybaseKey <key>              Default: anon
-  --help                           Show this help
+### Options
 
-Examples:
-  node scraper.js --quartos 3 --tipoImovel Casa --bairro Campeche
-  node scraper.js --transacao alugar --quartos 2 --precoMax 5000
-  node scraper.js --tipoImovel Apartamento --bairro "Lagoa da Conceição" --vagas 1 --maxPages 5
+```
+--transacao <comprar|alugar>         Default: comprar
+--categoria <residencial|comercial>  Default: residencial
+--cidade <nome>                      Default: sc+florianopolis
+--bairro <nome>                      Repeatable
+--quartos <1|2|3|4>                  Minimum bedrooms
+--tipoImovel <tipo>                  Repeatable
+--vagas <0|1|2|3|4>                 Garage spots
+--banheiros <1|2|3|4>               Minimum bathrooms
+--precoMin / --precoMax <BRL>        Price range
+--areaMin / --areaMax <m2>           Area range
+--maxPages <n>                       Limit pages (default: all)
+--busybaseUrl <url>                  Default: http://localhost:3001
 ```
 
 ---
@@ -112,29 +93,40 @@ Examples:
 
 ```
 imob/
-├── imob-app/          # React + Vite app
-│   ├── src/
-│   │   ├── App.jsx              # Root — state, extraction orchestration
-│   │   ├── components/
-│   │   │   ├── FilterPanel.jsx  # Left sidebar with all filters
-│   │   │   ├── PropertyCard.jsx # Individual property card
-│   │   │   ├── PropertyGrid.jsx # Paginated grid + sort
-│   │   │   ├── StatsBar.jsx     # Aggregate stats
-│   │   │   └── ExtractModal.jsx # Extraction progress modal
-│   │   └── lib/
-│   │       ├── constants.js     # PROPERTY_TYPES, AMENITIES, NEIGHBORHOODS, etc.
-│   │       ├── db.js            # BusyBase client + query helpers
-│   │       └── scraper.js       # Browser-side HTML parser + URL builder
-│   └── vite.config.js           # Dev proxy: /api-proxy → auxiliadorapredial.com.br
-│
-└── scripts/
-    ├── scraper.js     # CLI scraper (Node.js, axios + cheerio + @supabase/supabase-js)
-    └── package.json
+├── scrape-server.mjs       # API + scraper control server (port 3001)
+├── datasets/               # SQLite files, one per dataset (gitignored)
+├── images/                 # Cached property images (gitignored)
+├── scripts/
+│   └── scraper.js          # Playwright-based CLI scraper
+└── imob-app/               # React + Vite frontend
+    └── src/
+        ├── App.jsx
+        ├── components/
+        │   ├── FilterPanel.jsx
+        │   ├── PropertyCard.jsx
+        │   ├── PropertyGrid.jsx
+        │   ├── StatsBar.jsx
+        │   ├── VizDrawer.jsx
+        │   ├── BairroMap.jsx
+        │   ├── DatasetManager.jsx
+        │   └── ExtractModal.jsx
+        └── lib/
+            ├── constants.js   # Property types, amenities, neighbourhoods
+            ├── db.js          # API client + filter logic
+            └── scraper.js     # URL builder
 ```
 
-### How scraping works
+### API Endpoints (port 3001)
 
-- **Browser (app)**: Vite dev server proxies `/api-proxy/*` to `auxiliadorapredial.com.br`, bypassing CORS. Parsed with `DOMParser` in-browser.
-- **CLI**: `axios` fetches directly with a realistic User-Agent header. Parsed with `cheerio`.
-- **Deduplication**: Upsert on `code` (property ID from the listing URL). Re-running the same search updates existing records rather than duplicating.
-- **Polite scraping**: 700ms delay between pages.
+| Method | Path | Description |
+|---|---|---|
+| GET | `/datasets` | List all datasets |
+| POST | `/datasets` | Create dataset `{ name, label }` |
+| GET | `/datasets/active` | Active dataset info |
+| POST | `/datasets/active` | Switch active dataset `{ name }` |
+| DELETE | `/datasets/:name` | Delete dataset |
+| GET | `/properties` | All properties in active dataset |
+| POST | `/properties` | Upsert properties |
+| GET | `/scrape/status` | Scraper running state + log tail |
+| POST | `/scrape` | Start scraper with filter opts |
+| GET | `/images/:file` | Serve cached property images |
