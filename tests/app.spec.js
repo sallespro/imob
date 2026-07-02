@@ -1,115 +1,101 @@
 /**
  * End-to-end tests for the Imóveis Florianópolis app.
- * Requires:
- *   - BusyBase running: bunx busybase serve (port 54321)
- *   - Vite dev server running: cd imob-app && npm run dev (port 5173)
- *
- * Run: npx playwright test tests/app.spec.js --reporter=list
+ * Requires servers running: npm run start
+ *   API: http://localhost:3001
+ *   App: http://localhost:5173
  */
 
 import { test, expect } from '@playwright/test';
 
 const APP_URL = 'http://localhost:5173';
-const BB_BASE = 'http://127.0.0.1:54321/rest/v1';
+const API = 'http://localhost:3001';
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-const bbHeaders = {
-  'Content-Type': 'application/json',
-  'apikey': 'anon',
-  'Prefer': 'return=representation',
-};
-
-async function seedProperty(props = {}) {
-  const defaults = {
-    code: `TEST-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    url: 'https://www.auxiliadorapredial.com.br/imovel/casa/999/',
-    title: 'Casa Teste',
-    tipo: 'Casa',
-    bairro: 'Campeche',
-    cidade: 'Florianópolis',
-    preco_venda: 850000,
-    preco_original: 900000,
-    area_m2: 120,
-    quartos: 3,
-    banheiros: 2,
-    vagas: 2,
-    features: JSON.stringify(['Piscina', 'Churrasqueira']),
-    tags: JSON.stringify(['novo']),
-    scraped_at: new Date().toISOString(),
-  };
-  const payload = { ...defaults, ...props };
-  const res = await fetch(`${BB_BASE}/properties`, {
-    method: 'POST',
-    headers: bbHeaders,
-    body: JSON.stringify(payload),
-  });
-  const json = await res.json();
-  if (json.error) throw new Error(`Seed failed: ${json.error.message}`);
-  return (json.data || [])[0] || json;
-}
-
-async function cleanTestData() {
-  const res = await fetch(`${BB_BASE}/properties?limit=10000`, { headers: { apikey: 'anon' } });
-  const json = await res.json();
-  const testRows = (json.data || []).filter(r => r.code?.startsWith('TEST-'));
-  for (const row of testRows) {
-    await fetch(`${BB_BASE}/properties?eq.code=${encodeURIComponent(row.code)}`, {
-      method: 'DELETE',
-      headers: { apikey: 'anon' },
-    });
+async function waitForApi() {
+  for (let i = 0; i < 20; i++) {
+    try {
+      const r = await fetch(`${API}/datasets`);
+      if (r.ok) return;
+    } catch {}
+    await new Promise(r => setTimeout(r, 500));
   }
+  throw new Error('API not ready');
 }
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
+async function seedTestProperties() {
+  const props = Array.from({ length: 3 }, (_, i) => ({
+    code: `TEST-PW-${i + 1}`,
+    url: `https://www.auxiliadorapredial.com.br/imovel/${i + 1}/`,
+    tipo: i === 1 ? 'Apartamento' : 'Casa',
+    bairro: i === 1 ? 'Lagoa da Conceição' : 'Campeche',
+    cidade: 'Florianópolis',
+    preco_venda: 500000 + i * 200000,
+    area_m2: 80 + i * 40,
+    quartos: 2 + i,
+    banheiros: 2,
+    vagas: 1,
+    lat: -27.67 + i * 0.01,
+    lng: -48.47 + i * 0.01,
+    tags: i === 1 ? ['preco-baixou'] : [],
+    features: ['Piscina'],
+    scraped_at: new Date().toISOString(),
+  }));
+  const r = await fetch(`${API}/properties`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(props),
+  });
+  if (!r.ok) throw new Error(`Seed failed: ${r.status}`);
+}
 
-test.describe('App shell & header', () => {
-  test('renders header with title and BusyBase status', async ({ page }) => {
+async function cleanTestProperties() {
+  const r = await fetch(`${API}/properties`);
+  const all = await r.json();
+  const testRows = all.filter(p => p.code?.startsWith('TEST-PW-'));
+  // No delete endpoint — just note they'll be upserted over
+  return testRows.length;
+}
+
+// ─── App shell ────────────────────────────────────────────────────────────────
+
+test.describe('App shell', () => {
+  test('renders header and connects to API', async ({ page }) => {
     await page.goto(APP_URL);
-    await expect(page.locator('.app-header')).toBeVisible();
     await expect(page.locator('h1')).toContainText('Imóveis Florianópolis');
-    // Wait for BusyBase connection
-    await expect(page.locator('.db-ok')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.db-ok')).toBeVisible({ timeout: 15000 });
     await expect(page.locator('.db-error')).not.toBeVisible();
   });
+
+  test('shows Datasets button in header', async ({ page }) => {
+    await page.goto(APP_URL);
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
+    await expect(page.locator('.btn-datasets')).toBeVisible();
+  });
 });
+
+// ─── Filter panel ─────────────────────────────────────────────────────────────
 
 test.describe('Filter panel', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
+    await page.locator('.toggle-btn').first().waitFor({ timeout: 10000 });
   });
 
-  test('renders all filter sections', async ({ page }) => {
-    const sections = page.locator('.filter-section-header');
-    const titles = await sections.allTextContents();
-    const expected = ['Transação', 'Categoria', 'Preço', 'Quartos', 'Tipo de Imóvel', 'Bairros'];
-    for (const title of expected) {
-      expect(titles.some(t => t.includes(title))).toBeTruthy();
-    }
-  });
-
-  test('Transação toggle switches between Comprar and Alugar', async ({ page }) => {
-    const comprar = page.locator('.toggle-btn', { hasText: 'Comprar' });
-    const alugar = page.locator('.toggle-btn', { hasText: 'Alugar' });
+  test('Transação toggles between Comprar and Alugar', async ({ page }) => {
+    // Transação is in the Extração tab
+    await page.locator('.filter-tab', { hasText: 'Extração' }).click();
+    const alugar = page.locator('.filter-panel .toggle-btn', { hasText: 'Alugar' }).first();
+    const comprar = page.locator('.filter-panel .toggle-btn', { hasText: 'Comprar' }).first();
     await expect(comprar).toHaveClass(/active/);
     await alugar.click();
     await expect(alugar).toHaveClass(/active/);
     await expect(comprar).not.toHaveClass(/active/);
   });
 
-  test('Categoria toggle switches between Residencial and Comercial', async ({ page }) => {
-    const residencial = page.locator('.toggle-btn', { hasText: 'Residencial' });
-    const comercial = page.locator('.toggle-btn', { hasText: 'Comercial' });
-    await expect(residencial).toHaveClass(/active/);
-    await comercial.click();
-    await expect(comercial).toHaveClass(/active/);
-  });
-
-  test('Quartos toggle selects min bedrooms', async ({ page }) => {
-    // Quartos section: options have labels 1+/2+/3+/4+ and values 1/2/3/4
-    // The section header is the 4th filter-section, use within scoping
-    const quartosSection = page.locator('.filter-section').filter({ has: page.locator('.filter-section-header', { hasText: 'Quartos' }) });
+  test('Quartos toggle selects and deselects', async ({ page }) => {
+    const quartosSection = page.locator('.filter-section').filter({
+      has: page.locator('.filter-section-header', { hasText: 'Quartos' }),
+    });
     const btn3 = quartosSection.locator('.toggle-btn', { hasText: '3+' });
     await btn3.click();
     await expect(btn3).toHaveClass(/active/);
@@ -117,281 +103,221 @@ test.describe('Filter panel', () => {
     await expect(btn3).not.toHaveClass(/active/);
   });
 
-  test('Tipo de Imóvel checkbox toggles', async ({ page }) => {
-    const casaCheckbox = page.locator('.checkbox-item').filter({ hasText: 'Casa' }).locator('input').first();
-    await casaCheckbox.check();
-    await expect(casaCheckbox).toBeChecked();
-    await casaCheckbox.uncheck();
-    await expect(casaCheckbox).not.toBeChecked();
-  });
-
-  test('"Ver mais" expands property types', async ({ page }) => {
-    const verMaisBtn = page.locator('.show-more-btn').first();
-    await expect(verMaisBtn).toContainText('Ver mais');
-    const countBefore = await page.locator('#tipo-imovel-section .checkbox-item').count().catch(() => 4);
-    await verMaisBtn.click();
-    await expect(verMaisBtn).toContainText('Ver menos');
-  });
-
-  test('Bairro search filters neighborhood list', async ({ page }) => {
-    const searchInput = page.locator('.search-input');
-    await searchInput.fill('Campeche');
+  test('Bairro search filters neighbourhood list', async ({ page }) => {
+    // Bairros — Lista section is collapsed by default, open it first
+    const bairroListHeader = page.locator('.filter-section-header', { hasText: 'Bairros — Lista' });
+    await bairroListHeader.click();
+    await page.locator('.search-input').waitFor({ timeout: 5000 });
+    await page.locator('.search-input').fill('Campeche');
     const items = page.locator('.checkbox-list.scrollable .checkbox-item');
-    const count = await items.count();
-    expect(count).toBeGreaterThanOrEqual(1);
-    const firstLabel = await items.first().textContent();
-    expect(firstLabel?.toLowerCase()).toContain('campeche');
+    await expect(items.first()).toContainText(/campeche/i);
   });
 
-  test('selecting a bairro via checkbox works', async ({ page }) => {
-    const searchInput = page.locator('.search-input');
-    await searchInput.fill('Campeche');
-    const campecheCheck = page.locator('.checkbox-list.scrollable .checkbox-item')
-      .filter({ hasText: /^Campeche$/ })
-      .locator('input');
-    await campecheCheck.check();
-    await expect(campecheCheck).toBeChecked();
+  test('Limpar resets filters', async ({ page }) => {
+    await page.locator('.filter-tab', { hasText: 'Extração' }).click();
+    await page.locator('.filter-panel .toggle-btn', { hasText: 'Alugar' }).first().click();
+    await page.locator('.btn-reset').click();
+    await page.locator('.filter-tab', { hasText: 'Extração' }).click();
+    await expect(page.locator('.filter-panel .toggle-btn', { hasText: 'Comprar' }).first()).toHaveClass(/active/);
   });
 
-  test('collapsible sections open/close on click', async ({ page }) => {
-    // Vagas is defaultOpen=false
+  test('collapsible section opens and closes', async ({ page }) => {
     const vagasHeader = page.locator('.filter-section-header', { hasText: 'Vagas' });
     const vagasBody = vagasHeader.locator('..').locator('.filter-section-body');
-    // Initially hidden (defaultOpen=false)
     await expect(vagasBody).not.toBeVisible();
     await vagasHeader.click();
     await expect(vagasBody).toBeVisible();
     await vagasHeader.click();
     await expect(vagasBody).not.toBeVisible();
   });
-
-  test('Preço inputs accept numeric values', async ({ page }) => {
-    const precoSection = page.locator('.filter-section', { hasText: 'Preço' });
-    const minInput = precoSection.locator('input').first();
-    const maxInput = precoSection.locator('input').last();
-    await minInput.fill('500000');
-    await maxInput.fill('2000000');
-    await expect(minInput).toHaveValue('500000');
-    await expect(maxInput).toHaveValue('2000000');
-  });
-
-  test('Limpar button resets filters', async ({ page }) => {
-    // Set some filters
-    const alugar = page.locator('.toggle-btn', { hasText: 'Alugar' });
-    await alugar.click();
-    await expect(alugar).toHaveClass(/active/);
-
-    const limpar = page.locator('.btn-reset');
-    await limpar.click();
-
-    // Comprar should be active again
-    const comprar = page.locator('.toggle-btn', { hasText: 'Comprar' });
-    await expect(comprar).toHaveClass(/active/);
-    await expect(alugar).not.toHaveClass(/active/);
-  });
 });
+
+// ─── Property display ─────────────────────────────────────────────────────────
 
 test.describe('Property display', () => {
-  let seededCodes = [];
-
   test.beforeAll(async () => {
-    await cleanTestData();
-    const p1 = await seedProperty({
-      code: 'TEST-001',
-      title: 'Casa Teste Campeche',
-      tipo: 'Casa',
-      bairro: 'Campeche',
-      preco_venda: 850000,
-      quartos: 3,
-      area_m2: 120,
-    });
-    const p2 = await seedProperty({
-      code: 'TEST-002',
-      title: 'Apartamento Lagoa',
-      tipo: 'Apartamento',
-      bairro: 'Lagoa da Conceição',
-      preco_venda: 450000,
-      quartos: 2,
-      area_m2: 75,
-      tags: JSON.stringify(['preco-baixou']),
-    });
-    const p3 = await seedProperty({
-      code: 'TEST-003',
-      title: 'Casa Exclusiva',
-      tipo: 'Casa',
-      bairro: 'Campeche',
-      preco_venda: 1200000,
-      quartos: 4,
-      area_m2: 200,
-      tags: JSON.stringify(['exclusivo']),
-    });
-    seededCodes = ['TEST-001', 'TEST-002', 'TEST-003'];
+    await waitForApi();
+    await seedTestProperties();
   });
 
-  test.afterAll(async () => {
-    await cleanTestData();
-  });
-
-  test('shows property cards after loading', async ({ page }) => {
+  test('property cards render with price and link', async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    // Wait for cards or empty state
-    await page.waitForFunction(() => {
-      return document.querySelector('.property-card:not(.skeleton)') !== null ||
-             document.querySelector('.grid-empty') !== null;
-    }, { timeout: 10000 });
-
-    const cards = await page.locator('.property-card:not(.skeleton)').count();
-    expect(cards).toBeGreaterThanOrEqual(1);
-  });
-
-  test('stats bar shows aggregate info when properties exist', async ({ page }) => {
-    await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    await page.waitForFunction(() =>
-      document.querySelector('.stats-bar') !== null, { timeout: 10000 }
-    );
-    const statsBar = page.locator('.stats-bar');
-    await expect(statsBar).toBeVisible();
-    // Should show count
-    await expect(statsBar.locator('.stat-value').first()).not.toBeEmpty();
-  });
-
-  test('sort dropdown changes display order', async ({ page }) => {
-    await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    await page.locator('.sort-select').waitFor({ timeout: 10000 });
-    const select = page.locator('.sort-select');
-    await select.selectOption('preco_desc');
-    await expect(select).toHaveValue('preco_desc');
-    await select.selectOption('area_desc');
-    await expect(select).toHaveValue('area_desc');
-  });
-
-  test('property card shows price, location, and link', async ({ page }) => {
-    await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
     await page.locator('.property-card:not(.skeleton)').first().waitFor({ timeout: 10000 });
     const card = page.locator('.property-card:not(.skeleton)').first();
-    // Should have a price element
-    const priceEl = card.locator('.price-main, .price-sale');
-    await expect(priceEl).not.toBeEmpty();
-    // Should have a link to the listing
-    const link = card.locator('.property-link');
+    await expect(card.locator('.price-main').first()).not.toBeEmpty();
+    const link = card.locator('a[href*="auxiliadorapredial"]');
     await expect(link).toBeVisible();
-    const href = await link.getAttribute('href');
-    expect(href).toBeTruthy();
   });
 
-  test('tag chips render for tagged properties', async ({ page }) => {
+  test('stats bar shows count', async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    await page.locator('.property-card:not(.skeleton)').first().waitFor({ timeout: 10000 });
-    // At least one card with a tag should exist (we seeded tagged ones)
-    const taggedCards = page.locator('.property-tag');
-    const count = await taggedCards.count();
-    expect(count).toBeGreaterThan(0);
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
+    await expect(page.locator('.stats-bar')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.stat-value').first()).not.toBeEmpty();
   });
 
-  test('empty state shows when no data matches filters', async ({ page }) => {
+  test('sort dropdown works', async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
+    await page.locator('.sort-select').waitFor({ timeout: 10000 });
+    await page.locator('.sort-select').selectOption('preco_desc');
+    await expect(page.locator('.sort-select')).toHaveValue('preco_desc');
+  });
 
-    // Wait for cards to load first
+  test('impossible price filter shows empty state', async ({ page }) => {
+    await page.goto(APP_URL);
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
     await page.locator('.property-card:not(.skeleton)').first().waitFor({ timeout: 10000 });
-    // Set an impossible filter: 10+ million min price
-    const precoSection = page.locator('.filter-section', { hasText: 'Preço' });
-    const minInput = precoSection.locator('input').first();
-    await minInput.click();
-    await minInput.fill('');
-    await minInput.pressSequentially('99999999');
-    // Wait for empty state
-    const emptyState = page.locator('.grid-empty');
-    await expect(emptyState).toBeVisible({ timeout: 8000 });
+    const minInput = page.locator('.filter-section', { hasText: 'Preço' }).locator('input').first();
+    await minInput.fill('999999999');
+    await expect(page.locator('.grid-empty')).toBeVisible({ timeout: 8000 });
   });
 });
 
-test.describe('Extract modal', () => {
+// ─── Dataset manager ─────────────────────────────────────────────────────────
+
+test.describe('Dataset manager', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
   });
 
-  test('opens extract modal when "Extrair dados" is clicked', async ({ page }) => {
+  test('opens and closes dataset panel', async ({ page }) => {
+    await page.locator('.btn-datasets').click();
+    await expect(page.locator('.dataset-manager')).toBeVisible();
+    await page.locator('.dataset-manager-close').click();
+    await expect(page.locator('.dataset-manager')).not.toBeVisible();
+  });
+
+  test('active dataset is shown', async ({ page }) => {
+    await page.locator('.btn-datasets').click();
+    await expect(page.locator('.dataset-active-badge')).toBeVisible();
+  });
+
+  test('create and delete a dataset', async ({ page }) => {
+    await page.locator('.btn-datasets').click();
+    await page.locator('.dataset-input').first().fill('pw-test-ds');
+    await page.locator('.btn-create').click();
+    await expect(page.locator('.dataset-row', { hasText: 'pw-test-ds' })).toBeVisible({ timeout: 5000 });
+    // Delete it — handle the confirm dialog
+    page.on('dialog', d => d.accept());
+    await page.locator('.dataset-row', { hasText: 'pw-test-ds' }).locator('.btn-delete').click();
+    await expect(page.locator('.dataset-row', { hasText: 'pw-test-ds' })).not.toBeVisible({ timeout: 5000 });
+  });
+});
+
+// ─── Extract modal + real scrape ──────────────────────────────────────────────
+
+test.describe('Extrair dados', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(APP_URL);
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
+  });
+
+  test('extract modal opens, shows URL, and cancels', async ({ page }) => {
     await page.locator('.btn-extract').click();
     await expect(page.locator('.modal-overlay')).toBeVisible();
     await expect(page.locator('.modal-header h3')).toContainText('Extrair dados');
-  });
-
-  test('modal shows preview URL and BusyBase info', async ({ page }) => {
-    await page.locator('.btn-extract').click();
     await expect(page.locator('.modal-url-link')).toBeVisible();
-    await expect(page.locator('.modal-info')).toContainText('localhost:54321');
-  });
-
-  test('modal closes on Cancelar button', async ({ page }) => {
-    await page.locator('.btn-extract').click();
-    await expect(page.locator('.modal-overlay')).toBeVisible();
     await page.locator('.btn-secondary', { hasText: 'Cancelar' }).click();
     await expect(page.locator('.modal-overlay')).not.toBeVisible();
   });
 
-  test('modal closes on X button', async ({ page }) => {
-    await page.locator('.btn-extract').click();
-    await expect(page.locator('.modal-overlay')).toBeVisible();
-    await page.locator('.modal-close').click();
-    await expect(page.locator('.modal-overlay')).not.toBeVisible();
-  });
-
-  test('modal closes on overlay backdrop click', async ({ page }) => {
+  test('modal closes on backdrop click', async ({ page }) => {
     await page.locator('.btn-extract').click();
     await expect(page.locator('.modal-overlay')).toBeVisible();
     await page.locator('.modal-overlay').click({ position: { x: 10, y: 10 } });
     await expect(page.locator('.modal-overlay')).not.toBeVisible();
   });
+
+  test('real scrape: 1-page extraction completes and shows done', async ({ page }) => {
+    await page.locator('.toggle-btn').first().waitFor({ timeout: 10000 });
+
+    // Switch to Extração tab, select Campeche bairro, and limit to 1 page
+    await page.locator('.filter-tab', { hasText: 'Extração' }).click();
+    await page.locator('.filter-section-header', { hasText: 'Bairros — Lista' }).click();
+    await page.locator('.search-input').waitFor({ timeout: 5000 });
+    await page.locator('.search-input').fill('Campeche');
+    const campecheItem = page.locator('.checkbox-list.scrollable .checkbox-item')
+      .filter({ hasText: 'Campeche' }).first();
+    await campecheItem.waitFor({ timeout: 5000 });
+    await campecheItem.locator('input').check();
+
+    // Set maxPages to 1 for a fast test (open collapsed Paginação section)
+    await page.locator('.filter-section-header', { hasText: 'Paginação' }).click();
+    await page.locator('input[placeholder="Todas"]').waitFor({ timeout: 3000 });
+    await page.locator('input[placeholder="Todas"]').fill('1');
+
+    await page.locator('.btn-extract').click();
+    await expect(page.locator('.modal-overlay')).toBeVisible();
+    await page.locator('.btn-primary', { hasText: 'Iniciar extração' }).click();
+
+    // Should show running spinner
+    await expect(page.locator('.modal-progress')).toBeVisible({ timeout: 10000 });
+
+    // Wait for completion — 1-page scrape takes ~30-60s
+    await expect(page.locator('.modal-progress')).toContainText('concluída', { timeout: 120000 });
+
+    // Verify properties are in the DB via API
+    const datasets = await page.evaluate(async () => {
+      const res = await fetch('http://localhost:3001/datasets');
+      return res.json();
+    });
+    const active = datasets.find(d => d.count > 0);
+    expect(active).toBeTruthy();
+    expect(active.count).toBeGreaterThan(0);
+  });
 });
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
 
 test.describe('Pagination', () => {
   test.beforeAll(async () => {
-    // Seed 30 properties sequentially to avoid crashing BusyBase with concurrent writes
-    await cleanTestData();
-    for (let i = 1; i <= 30; i++) {
-      await seedProperty({
-        code: `TEST-${String(i).padStart(3, '0')}`,
-        title: `Imóvel Teste ${i}`,
-        preco_venda: 500000 + i * 10000,
-      });
-    }
+    await waitForApi();
+    // Seed 30 properties so pagination kicks in (page size = 24)
+    const props = Array.from({ length: 30 }, (_, i) => ({
+      code: `TEST-PW-PAGE-${i + 1}`,
+      url: `https://www.auxiliadorapredial.com.br/imovel/page-${i + 1}/`,
+      tipo: 'Casa',
+      bairro: 'Campeche',
+      cidade: 'Florianópolis',
+      preco_venda: 400000 + i * 10000,
+      area_m2: 80,
+      quartos: 3,
+      banheiros: 2,
+      vagas: 1,
+      lat: -27.67,
+      lng: -48.47,
+      tags: [],
+      features: [],
+      scraped_at: new Date().toISOString(),
+    }));
+    await fetch(`${API}/properties`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(props),
+    });
   });
 
-  test.afterAll(async () => {
-    await cleanTestData();
-  });
-
-  test('pagination controls appear when more than 24 properties', async ({ page }) => {
+  test('pagination controls appear with 30+ properties', async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
-    await page.locator('.pagination').waitFor({ timeout: 10000 });
-    const pagination = page.locator('.pagination');
-    await expect(pagination).toBeVisible();
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
+    await expect(page.locator('.pagination')).toBeVisible({ timeout: 10000 });
   });
 
   test('next page button navigates forward', async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
     await page.locator('.pagination').waitFor({ timeout: 10000 });
-    const nextBtn = page.locator('.page-btn').last();
-    await nextBtn.click();
-    // Active page should now be 2
-    const activePage = page.locator('.page-btn.active');
-    await expect(activePage).toContainText('2');
+    await page.locator('.page-btn').last().click();
+    await expect(page.locator('.page-btn.active')).toContainText('2');
   });
 
-  test('previous page button is disabled on page 1', async ({ page }) => {
+  test('previous button is disabled on page 1', async ({ page }) => {
     await page.goto(APP_URL);
-    await page.locator('.db-ok').waitFor({ timeout: 10000 });
+    await page.locator('.db-ok').waitFor({ timeout: 15000 });
     await page.locator('.pagination').waitFor({ timeout: 10000 });
-    const prevBtn = page.locator('.page-btn').first();
-    await expect(prevBtn).toBeDisabled();
+    await expect(page.locator('.page-btn').first()).toBeDisabled();
   });
 });

@@ -38,7 +38,7 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
 
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={onClose}>Cancelar</button>
-                <button className="btn-primary" onClick={onConfirm}>Iniciar extração</button>
+                <button className="btn-primary" onClick={() => onConfirm()}>Iniciar extração</button>
               </div>
             </>
           )}
@@ -68,7 +68,7 @@ export default function ExtractModal({ filters, status, onClose, onConfirm }) {
               </p>
               <div className="modal-actions">
                 <button className="btn-secondary" onClick={onClose}>Fechar</button>
-                <button className="btn-primary" onClick={onConfirm}>Tentar novamente</button>
+                <button className="btn-primary" onClick={() => onConfirm()}>Tentar novamente</button>
               </div>
             </div>
           )}
