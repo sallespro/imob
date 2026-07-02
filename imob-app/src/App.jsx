@@ -57,12 +57,15 @@ export default function App() {
   useEffect(() => {
     if (!apiReady) return;
     let interval;
+    let seenRunning = false;
     const poll = async () => {
       try {
         const r = await fetch('http://localhost:3001/scrape/status');
         const s = await r.json();
         setScrapeStatus(s);
-        if (!s.running && extractStatus === 'running') {
+        if (s.running) seenRunning = true;
+        if (!s.running && seenRunning && extractStatus === 'running') {
+          seenRunning = false;
           if (s.exitCode === 0 || s.exitCode === null) {
             setExtractStatus('done');
           } else {
