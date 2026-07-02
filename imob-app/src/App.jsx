@@ -25,6 +25,7 @@ export default function App() {
   const [datasets, setDatasets] = useState([]);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
+  const scrapeStartedRef = useRef(false);
 
   useEffect(() => {
     // Wait for the API server to be ready
@@ -57,15 +58,14 @@ export default function App() {
   useEffect(() => {
     if (!apiReady) return;
     let interval;
-    let seenRunning = false;
     const poll = async () => {
       try {
         const r = await fetch('http://localhost:3001/scrape/status');
         const s = await r.json();
         setScrapeStatus(s);
-        if (s.running) seenRunning = true;
-        if (!s.running && seenRunning && extractStatus === 'running') {
-          seenRunning = false;
+        if (s.running) scrapeStartedRef.current = true;
+        if (!s.running && scrapeStartedRef.current && extractStatus === 'running') {
+          scrapeStartedRef.current = false;
           if (s.exitCode === 0 || s.exitCode === null) {
             setExtractStatus('done');
           } else {
@@ -114,6 +114,7 @@ export default function App() {
 
   async function runExtraction(opts = {}) {
     setExtractStatus('running');
+    scrapeStartedRef.current = false;
     try {
       const f = filtersRef.current;
       const resp = await fetch('http://localhost:3001/scrape', {
@@ -133,14 +134,20 @@ export default function App() {
           areaMin: f.areaMin || null,
           areaMax: f.areaMax || null,
           maxPages: f.maxPages ? parseInt(f.maxPages) : null,
-          ...opts, // allow dataset override from DatasetManager
+          ...opts,
         }),
       });
 
+      if (resp.status === 409) {
+        // Already running — treat as started, poll will catch completion
+        scrapeStartedRef.current = true;
+        return;
+      }
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
+      scrapeStartedRef.current = true;
     } catch (err) {
       console.error('[Scraper] Error:', err);
       setExtractStatus('error');
